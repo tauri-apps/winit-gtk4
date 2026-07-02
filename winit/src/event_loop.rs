@@ -225,6 +225,7 @@ impl EventLoop {
             orbital_platform,
             x11_platform,
             wayland_platform,
+            gtk4_platform,
         ))]
         {
             let result = self.event_loop.run_app_on_demand(&mut app);
@@ -328,6 +329,7 @@ impl AsRawFd for EventLoop {
     android_platform,
     x11_platform,
     wayland_platform,
+    gtk4_platform,
     docsrs,
 ))]
 impl winit_core::event_loop::pump_events::EventLoopExtPumpEvents for EventLoop {
@@ -348,11 +350,35 @@ impl winit_core::event_loop::pump_events::EventLoopExtPumpEvents for EventLoop {
     orbital_platform,
     x11_platform,
     wayland_platform,
+    gtk4_platform,
     docsrs,
 ))]
 impl winit_core::event_loop::run_on_demand::EventLoopExtRunOnDemand for EventLoop {
     fn run_app_on_demand<A: ApplicationHandler>(&mut self, app: A) -> Result<(), EventLoopError> {
         self.event_loop.run_app_on_demand(app)
+    }
+}
+
+#[cfg(gtk4_platform)]
+impl winit_gtk4::EventLoopExtGtk4 for EventLoop {
+    #[inline]
+    fn is_gtk4(&self) -> bool {
+        self.event_loop.is_gtk4()
+    }
+}
+
+#[cfg(gtk4_platform)]
+impl winit_gtk4::EventLoopBuilderExtGtk4 for EventLoopBuilder {
+    #[inline]
+    fn with_gtk4(&mut self) -> &mut Self {
+        self.platform_specific.forced_backend = Some(crate::platform_impl::Backend::Gtk4);
+        self
+    }
+
+    #[inline]
+    fn with_application_id(&mut self, application_id: String) -> &mut Self {
+        self.platform_specific.gtk4.application_id = Some(application_id);
+        self
     }
 }
 
@@ -489,7 +515,7 @@ impl winit_win32::EventLoopBuilderExtWindows for EventLoopBuilder {
 impl winit_x11::EventLoopExtX11 for EventLoop {
     #[inline]
     fn is_x11(&self) -> bool {
-        !self.event_loop.is_wayland()
+        self.event_loop.is_x11()
     }
 }
 

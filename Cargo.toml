@@ -18,6 +18,7 @@ winit-android = { version = "=0.31.0-beta.2", path = "winit-android" }
 winit-appkit = { version = "=0.31.0-beta.2", path = "winit-appkit" }
 winit-common = { version = "=0.31.0-beta.2", path = "winit-common" }
 winit-core = { version = "=0.31.0-beta.2", path = "winit-core" }
+winit-gtk4 = { version = "=0.31.0-beta.2", path = "winit-gtk4" }
 winit-orbital = { version = "=0.31.0-beta.2", path = "winit-orbital" }
 winit-uikit = { version = "=0.31.0-beta.2", path = "winit-uikit" }
 winit-wayland = { version = "=0.31.0-beta.2", path = "winit-wayland", default-features = false }
@@ -77,6 +78,9 @@ rustix = { version = "1.0.7", default-features = false }
 x11-dl = "2.19.1"
 x11rb = { version = "0.13.0", default-features = false }
 xkbcommon-dl = "0.4.2"
+gtk4 = "0.11.4"
+gdk4-wayland = "0.11.4"
+gdk4-x11 = { version = "0.11.4", features = ["xlib"] }
 
 # Orbital dependencies.
 libredox = "0.1.12"

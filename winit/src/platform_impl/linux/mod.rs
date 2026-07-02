@@ -1,17 +1,22 @@
 #![cfg(free_unix)]
 
-#[cfg(all(not(x11_platform), not(wayland_platform)))]
-compile_error!("Please select a feature to build for unix: `x11`, `wayland`");
+#[cfg(all(not(x11_platform), not(wayland_platform), not(gtk4_platform)))]
+compile_error!("Please select a feature to build for unix: `x11`, `wayland`, `gtk4`");
 
 use std::env;
 use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::time::Duration;
 
+#[cfg(any(x11_platform, wayland_platform))]
 pub(crate) use winit_common::xkb::{physicalkey_to_scancode, scancode_to_physicalkey};
 use winit_core::application::ApplicationHandler;
-use winit_core::error::{EventLoopError, NotSupportedError};
+use winit_core::error::EventLoopError;
+#[cfg(all(any(x11_platform, wayland_platform), not(gtk4_platform)))]
+use winit_core::error::NotSupportedError;
 use winit_core::event_loop::ActiveEventLoop;
 use winit_core::event_loop::pump_events::PumpStatus;
+#[cfg(gtk4_platform)]
+pub(crate) use winit_gtk4 as gtk4;
 #[cfg(wayland_platform)]
 pub(crate) use winit_wayland as wayland;
 #[cfg(x11_platform)]
@@ -23,30 +28,37 @@ pub(crate) enum Backend {
     X,
     #[cfg(wayland_platform)]
     Wayland,
+    #[cfg(gtk4_platform)]
+    Gtk4,
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PlatformSpecificEventLoopAttributes {
     pub(crate) forced_backend: Option<Backend>,
     pub(crate) any_thread: bool,
+    #[cfg(gtk4_platform)]
+    pub(crate) gtk4: gtk4::PlatformSpecificEventLoopAttributes,
 }
 
-/// `x11_or_wayland!(match expr; Enum(foo) => foo.something())`
+/// `linux_backend!(match expr; Enum(foo) => foo.something())`
 /// expands to the equivalent of
 /// ```ignore
 /// match self {
 ///    Enum::X(foo) => foo.something(),
 ///    Enum::Wayland(foo) => foo.something(),
+///    Enum::Gtk4(foo) => foo.something(),
 /// }
 /// ```
 /// The result can be converted to another enum by adding `; as AnotherEnum`
-macro_rules! x11_or_wayland {
+macro_rules! linux_backend {
     (match $what:expr; $enum:ident ( $($c1:tt)* ) => $x:expr; as $enum2:ident ) => {
         match $what {
             #[cfg(x11_platform)]
             $enum::X($($c1)*) => $enum2::X($x),
             #[cfg(wayland_platform)]
             $enum::Wayland($($c1)*) => $enum2::Wayland($x),
+            #[cfg(gtk4_platform)]
+            $enum::Gtk4($($c1)*) => $enum2::Gtk4($x),
         }
     };
     (match $what:expr; $enum:ident ( $($c1:tt)* ) => $x:expr) => {
@@ -55,6 +67,8 @@ macro_rules! x11_or_wayland {
             $enum::X($($c1)*) => $x,
             #[cfg(wayland_platform)]
             $enum::Wayland($($c1)*) => $x,
+            #[cfg(gtk4_platform)]
+            $enum::Gtk4($($c1)*) => $x,
         }
     };
 }
@@ -66,6 +80,8 @@ pub enum EventLoop {
     Wayland(Box<wayland::EventLoop>),
     #[cfg(x11_platform)]
     X(x11::EventLoop),
+    #[cfg(gtk4_platform)]
+    Gtk4(gtk4::EventLoop),
 }
 
 impl EventLoop {
@@ -102,7 +118,11 @@ impl EventLoop {
             // X11 is present.
             #[cfg(x11_platform)]
             (None, _, true) => Backend::X,
+            // GTK4 is present.
+            #[cfg(gtk4_platform)]
+            (None, _, _) => Backend::Gtk4,
             // No backend is present.
+            #[cfg(all(any(x11_platform, wayland_platform), not(gtk4_platform)))]
             (_, wayland_display, x11_display) => {
                 let msg = if wayland_display && !cfg!(wayland_platform) {
                     "DISPLAY is not set; note: enable the `winit/wayland` feature to support \
@@ -123,6 +143,8 @@ impl EventLoop {
             Backend::Wayland => EventLoop::new_wayland_any_thread(),
             #[cfg(x11_platform)]
             Backend::X => EventLoop::new_x11_any_thread(),
+            #[cfg(gtk4_platform)]
+            Backend::Gtk4 => EventLoop::new_gtk4_any_thread(&attributes.gtk4),
         }
     }
 
@@ -136,13 +158,42 @@ impl EventLoop {
         x11::EventLoop::new().map(EventLoop::X)
     }
 
+    #[cfg(gtk4_platform)]
+    fn new_gtk4_any_thread(
+        attributes: &gtk4::PlatformSpecificEventLoopAttributes,
+    ) -> Result<EventLoop, EventLoopError> {
+        gtk4::EventLoop::new(attributes).map(EventLoop::Gtk4)
+    }
+
     #[inline]
     #[allow(dead_code)]
     pub fn is_wayland(&self) -> bool {
         match *self {
             #[cfg(wayland_platform)]
             EventLoop::Wayland(_) => true,
+            #[cfg(any(x11_platform, gtk4_platform))]
+            _ => false,
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn is_x11(&self) -> bool {
+        match *self {
             #[cfg(x11_platform)]
+            EventLoop::X(_) => true,
+            #[cfg(any(wayland_platform, gtk4_platform))]
+            _ => false,
+        }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn is_gtk4(&self) -> bool {
+        match *self {
+            #[cfg(gtk4_platform)]
+            EventLoop::Gtk4(_) => true,
+            #[cfg(any(x11_platform, wayland_platform))]
             _ => false,
         }
     }
@@ -151,7 +202,7 @@ impl EventLoop {
         &mut self,
         app: A,
     ) -> Result<(), EventLoopError> {
-        x11_or_wayland!(match self; EventLoop(evlp) => evlp.run_app_on_demand(app))
+        linux_backend!(match self; EventLoop(evlp) => evlp.run_app_on_demand(app))
     }
 
     pub fn pump_app_events<A: ApplicationHandler>(
@@ -159,23 +210,39 @@ impl EventLoop {
         timeout: Option<Duration>,
         app: A,
     ) -> PumpStatus {
-        x11_or_wayland!(match self; EventLoop(evlp) => evlp.pump_app_events(timeout, app))
+        linux_backend!(match self; EventLoop(evlp) => evlp.pump_app_events(timeout, app))
     }
 
     pub fn window_target(&self) -> &dyn ActiveEventLoop {
-        x11_or_wayland!(match self; EventLoop(evlp) => evlp.window_target())
+        linux_backend!(match self; EventLoop(evlp) => evlp.window_target())
     }
 }
 
 impl AsFd for EventLoop {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        x11_or_wayland!(match self; EventLoop(evlp) => evlp.as_fd())
+        match self {
+            #[cfg(x11_platform)]
+            EventLoop::X(evlp) => evlp.as_fd(),
+            #[cfg(wayland_platform)]
+            EventLoop::Wayland(evlp) => evlp.as_fd(),
+            #[cfg(gtk4_platform)]
+            EventLoop::Gtk4(_) => todo!("GTK4 event-loop file descriptors are not implemented yet"),
+        }
     }
 }
 
 impl AsRawFd for EventLoop {
     fn as_raw_fd(&self) -> RawFd {
-        x11_or_wayland!(match self; EventLoop(evlp) => evlp.as_raw_fd())
+        match self {
+            #[cfg(x11_platform)]
+            EventLoop::X(evlp) => evlp.as_raw_fd(),
+            #[cfg(wayland_platform)]
+            EventLoop::Wayland(evlp) => evlp.as_raw_fd(),
+            #[cfg(gtk4_platform)]
+            EventLoop::Gtk4(_) => {
+                todo!("GTK4 event-loop file descriptors are not implemented yet")
+            },
+        }
     }
 }
 

@@ -1,0 +1,20 @@
+[package]
+description = "Winit's GTK4 backend"
+documentation = "https://docs.rs/winit-gtk4"
+edition.workspace = true
+license.workspace = true
+name = "winit-gtk4"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+dpi.workspace = true
+gdk4-wayland.workspace = true
+gdk4-x11.workspace = true
+gtk4.workspace = true
+rwh_06.workspace = true
+winit-core.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
