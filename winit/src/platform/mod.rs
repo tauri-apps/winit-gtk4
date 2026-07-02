@@ -11,6 +11,7 @@
 #![doc = concat!("| macOS | [`winit-appkit`](https://docs.rs/winit-appkit/", env!("CARGO_PKG_VERSION"), "/) | `winit::platform::macos` |")]
 #![doc = concat!("| Redox | [`winit-orbital`](https://docs.rs/winit-orbital/", env!("CARGO_PKG_VERSION"), "/) | `winit::platform::orbital` |")]
 #![doc = concat!("| iOS/visionOS/tvOS/Mac Catalyst | [`winit-uikit`](https://docs.rs/winit-uikit/", env!("CARGO_PKG_VERSION"), "/) | `winit::platform::ios` |")]
+#![doc = concat!("| GTK4 | [`winit-gtk4`](https://docs.rs/winit-gtk4/", env!("CARGO_PKG_VERSION"), "/) | `winit::platform::gtk4` |")]
 #![doc = concat!("| Wayland | [`winit-wayland`](https://docs.rs/winit-wayland/", env!("CARGO_PKG_VERSION"), "/) | `winit::platform::wayland` |")]
 #![doc = concat!("| Web | [`winit-web`](https://docs.rs/winit-web/", env!("CARGO_PKG_VERSION"), "/) | `winit::platform::web` |")]
 #![doc = concat!("| Windows | [`winit-win32`](https://docs.rs/winit-win32/", env!("CARGO_PKG_VERSION"), "/) | `winit::platform::windows` |")]
@@ -25,6 +26,8 @@
 pub use winit_android as android;
 #[cfg(macos_platform)]
 pub use winit_appkit as macos;
+#[cfg(gtk4_platform)]
+pub use winit_gtk4 as gtk4;
 #[cfg(orbital_platform)]
 pub use winit_orbital as orbital;
 #[cfg(ios_platform)]
