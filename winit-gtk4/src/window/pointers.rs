@@ -1,3 +1,5 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use dpi::LogicalPosition;
@@ -5,8 +7,8 @@ use gtk4::gdk::InputSource;
 use gtk4::gdk::prelude::DeviceExt;
 use gtk4::prelude::*;
 use winit_core::event::{
-    ButtonSource, DeviceId, ElementState, Force, MouseButton, PointerKind, PointerSource,
-    TabletToolData, TabletToolKind, TabletToolTilt, WindowEvent,
+    ButtonSource, DeviceId, ElementState, Force, MouseButton, MouseScrollDelta, PointerKind,
+    PointerSource, TabletToolData, TabletToolKind, TabletToolTilt, TouchPhase, WindowEvent,
 };
 use winit_core::window::WindowId;
 
@@ -21,6 +23,7 @@ pub(crate) fn connect(
 ) {
     connect_motion(event_loop, gtk_window, window_id, state);
     connect_buttons(event_loop, gtk_window, window_id, state);
+    connect_scroll(event_loop, gtk_window, window_id);
 }
 
 fn connect_motion(
@@ -108,6 +111,81 @@ fn connect_buttons(
 
         gtk4::glib::Propagation::Proceed
     });
+
+    gtk_window.add_controller(controller);
+}
+
+fn connect_scroll(
+    event_loop: &ActiveEventLoop,
+    gtk_window: &gtk4::ApplicationWindow,
+    window_id: WindowId,
+) {
+    let controller = gtk4::EventControllerScroll::new(
+        gtk4::EventControllerScrollFlags::BOTH_AXES | gtk4::EventControllerScrollFlags::DISCRETE,
+    );
+
+    let continuous_scroll = Rc::new(Cell::new(false));
+    let emitted_continuous_scroll = Rc::new(Cell::new(false));
+    let next_phase = Rc::new(Cell::new(TouchPhase::Moved));
+
+    {
+        let continuous_scroll = continuous_scroll.clone();
+        let emitted_continuous_scroll = emitted_continuous_scroll.clone();
+        let next_phase = next_phase.clone();
+        controller.connect_scroll_begin(move |_| {
+            continuous_scroll.set(true);
+            emitted_continuous_scroll.set(false);
+            // connect_scroll_begin doesn't have x/y coordinates, so we can't emit a TouchPhase::Started event here. Instead, we emit it on the first scroll event.
+            next_phase.set(TouchPhase::Started);
+        });
+    }
+
+    {
+        let shared = event_loop.shared.clone();
+        let continuous_scroll = continuous_scroll.clone();
+        let emitted_continuous_scroll = emitted_continuous_scroll.clone();
+        let next_phase = next_phase.clone();
+        controller.connect_scroll(move |controller, dx, dy| {
+            let phase = if continuous_scroll.get() {
+                emitted_continuous_scroll.set(true);
+                let phase = next_phase.get();
+                next_phase.set(TouchPhase::Moved);
+                phase
+            } else {
+                TouchPhase::Moved
+            };
+
+            let event = WindowEvent::MouseWheel {
+                device_id: controller.current_event_device().and_then(|device| device_id(&device)),
+                delta: MouseScrollDelta::LineDelta(dx as f32, dy as f32),
+                phase,
+            };
+            shared.borrow_mut().events_sink.push_window_event(event, window_id);
+
+            gtk4::glib::Propagation::Proceed
+        });
+    }
+
+    {
+        let shared = event_loop.shared.clone();
+        let continuous_scroll = continuous_scroll.clone();
+        let emitted_continuous_scroll = emitted_continuous_scroll.clone();
+        let next_phase = next_phase.clone();
+        controller.connect_scroll_end(move |controller| {
+            if continuous_scroll.replace(false) && emitted_continuous_scroll.replace(false) {
+                let event = WindowEvent::MouseWheel {
+                    device_id: controller
+                        .current_event_device()
+                        .and_then(|device| device_id(&device)),
+                    delta: MouseScrollDelta::LineDelta(0.0, 0.0),
+                    phase: TouchPhase::Ended,
+                };
+                shared.borrow_mut().events_sink.push_window_event(event, window_id);
+            }
+
+            next_phase.set(TouchPhase::Moved);
+        });
+    }
 
     gtk_window.add_controller(controller);
 }
