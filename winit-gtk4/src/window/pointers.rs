@@ -5,8 +5,8 @@ use gtk4::gdk::InputSource;
 use gtk4::gdk::prelude::DeviceExt;
 use gtk4::prelude::*;
 use winit_core::event::{
-    DeviceId, Force, PointerKind, PointerSource, TabletToolData, TabletToolKind, TabletToolTilt,
-    WindowEvent,
+    ButtonSource, DeviceId, ElementState, Force, MouseButton, PointerKind, PointerSource,
+    TabletToolData, TabletToolKind, TabletToolTilt, WindowEvent,
 };
 use winit_core::window::WindowId;
 
@@ -19,8 +19,17 @@ pub(crate) fn connect(
     window_id: WindowId,
     state: &Arc<Mutex<WindowState>>,
 ) {
-    let controller = gtk4::EventControllerMotion::new();
+    connect_motion(event_loop, gtk_window, window_id, state);
+    connect_buttons(event_loop, gtk_window, window_id, state);
+}
 
+fn connect_motion(
+    event_loop: &ActiveEventLoop,
+    gtk_window: &gtk4::ApplicationWindow,
+    window_id: WindowId,
+    state: &Arc<Mutex<WindowState>>,
+) {
+    let controller = gtk4::EventControllerMotion::new();
     {
         let shared = event_loop.shared.clone();
         let state = state.clone();
@@ -77,6 +86,28 @@ pub(crate) fn connect(
             shared.borrow_mut().events_sink.push_window_event(event, window_id);
         });
     }
+
+    gtk_window.add_controller(controller);
+}
+
+fn connect_buttons(
+    event_loop: &ActiveEventLoop,
+    gtk_window: &gtk4::ApplicationWindow,
+    window_id: WindowId,
+    state: &Arc<Mutex<WindowState>>,
+) {
+    let controller = gtk4::EventControllerLegacy::new();
+    controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+
+    let shared = event_loop.shared.clone();
+    let state = state.clone();
+    controller.connect_event(move |_, event| {
+        if let Some(event) = pointer_button_event(event, &state) {
+            shared.borrow_mut().events_sink.push_window_event(event, window_id);
+        }
+
+        gtk4::glib::Propagation::Proceed
+    });
 
     gtk_window.add_controller(controller);
 }
@@ -153,6 +184,53 @@ impl PointerMetadata {
             kind: PointerKind::Unknown,
             source: PointerSource::Unknown,
         }
+    }
+}
+
+fn pointer_button_event(
+    event: &gtk4::gdk::Event,
+    window_state: &Arc<Mutex<WindowState>>,
+) -> Option<WindowEvent> {
+    let button_event = event.downcast_ref::<gtk4::gdk::ButtonEvent>()?;
+    let state = match event.event_type() {
+        gtk4::gdk::EventType::ButtonPress => ElementState::Pressed,
+        gtk4::gdk::EventType::ButtonRelease => ElementState::Released,
+        _ => return None,
+    };
+
+    let device = event.device()?;
+    match device.source() {
+        InputSource::Mouse | InputSource::Touchpad | InputSource::Trackpoint => (),
+        _ => return None,
+    }
+
+    let (x, y) = event.position()?;
+    let position = {
+        let scale_factor = window_state.lock().unwrap().scale_factor;
+        LogicalPosition::new(x, y).to_physical(scale_factor)
+    };
+
+    Some(WindowEvent::PointerButton {
+        device_id: device_id(&device),
+        primary: true,
+        state,
+        position,
+        button: mouse_button(button_event.button())?,
+    })
+}
+
+fn mouse_button(button: u32) -> Option<ButtonSource> {
+    match button {
+        1 => Some(MouseButton::Left.into()),
+        2 => Some(MouseButton::Middle.into()),
+        3 => Some(MouseButton::Right.into()),
+
+        // X11-style wheel pseudo-buttons are handled through scroll events.
+        4..=7 => None,
+
+        8..=36 => MouseButton::try_from_u8((button - 5) as u8).map(Into::into),
+        _ if button <= u16::MAX as u32 => Some(ButtonSource::Unknown(button as u16)),
+        _ => None,
     }
 }
 
