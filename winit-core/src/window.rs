@@ -295,6 +295,8 @@ impl WindowAttributes {
     /// - **Wayland:** This controls only CSD. When using `None` it'll try to use dbus to get the
     ///   system preference. When explicit theme is used, this will avoid dbus all together.
     /// - **x11:** Build window with `_GTK_THEME_VARIANT` hint set to `dark` or `light`.
+    /// - **GTK4:** Sets `GtkSettings:gtk-application-prefer-dark-theme`, which affects all windows
+    ///   sharing the same GTK settings.
     /// - **iOS / Android / Web / x11 / Orbital:** Ignored.
     #[inline]
     pub fn with_theme(mut self, theme: Option<Theme>) -> Self {
@@ -1267,6 +1269,8 @@ pub trait Window: AsAny + Send + Sync + fmt::Debug {
     ///   get the system preference.
     /// - **X11:** Sets `_GTK_THEME_VARIANT` hint to `dark` or `light` and if `None` is used, it
     ///   will default to  [`Theme::Dark`].
+    /// - **GTK4:** Sets `GtkSettings:gtk-application-prefer-dark-theme`, which affects all windows
+    ///   sharing the same GTK settings.
     /// - **iOS / Android / Web / Orbital:** Unsupported.
     fn set_theme(&self, theme: Option<Theme>);
 
