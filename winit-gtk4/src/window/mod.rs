@@ -3,12 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
 use gdk4_wayland::prelude::WaylandSurfaceExtManual;
-use gtk4::gdk::prelude::SurfaceExt;
+use gtk4::gdk::prelude::{DeviceExt, DisplayExt, SeatExt, SurfaceExt};
 use gtk4::prelude::*;
 use winit_core::cursor::Cursor;
 use winit_core::error::RequestError;
 use winit_core::event::WindowEvent;
 use winit_core::icon::Icon;
+use winit_core::keyboard::ModifiersState;
 use winit_core::monitor::{Fullscreen, MonitorHandle};
 use winit_core::window::{
     CursorGrabMode, ImeCapabilities, ImeRequest, ImeRequestError, ResizeDirection, Theme,
@@ -19,6 +20,7 @@ use winit_core::window::{
 use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
 use crate::sink::CommandSink;
 
+mod keyboards;
 mod state;
 
 pub(crate) use state::WindowState;
@@ -67,7 +69,16 @@ impl Window {
         let title = attributes.title;
         let visible = attributes.visible;
 
-        let state = WindowState { surface_size, last_layout: None, scale_factor, visible, title };
+        let state = WindowState {
+            surface_size,
+            last_layout: None,
+            scale_factor,
+            visible,
+            has_focus: false,
+            modifiers: ModifiersState::default(),
+            held_key_press: None,
+            title,
+        };
         let state = Arc::new(Mutex::new(state));
 
         let commands = event_loop.shared.borrow().commands.clone();
@@ -102,7 +113,9 @@ impl Window {
     ) {
         Self::connect_close_request(event_loop, gtk_window, window_id);
         Self::connect_destroy(event_loop, gtk_window, window_id);
+        Self::connect_focus(event_loop, gtk_window, window_id, state);
         Self::connect_surface_layout(event_loop, gtk_window, window_id, state);
+        keyboards::connect(event_loop, gtk_window, window_id, state);
     }
 
     fn connect_close_request(
@@ -128,6 +141,58 @@ impl Window {
             let mut shared = shared.borrow_mut();
             shared.windows.remove(&window_id);
             shared.events_sink.push_window_event(WindowEvent::Destroyed, window_id);
+        });
+    }
+
+    fn connect_focus(
+        event_loop: &ActiveEventLoop,
+        gtk_window: &gtk4::ApplicationWindow,
+        window_id: WindowId,
+        state: &Arc<Mutex<WindowState>>,
+    ) {
+        let shared = event_loop.shared.clone();
+        let state = state.clone();
+
+        gtk_window.connect_is_active_notify(move |window| {
+            let focused = window.is_active();
+            let modifiers = if focused {
+                let modifiers = WidgetExt::display(window)
+                    .default_seat()
+                    .and_then(|seat| seat.keyboard())
+                    .map(|keyboard| keyboard.modifier_state())
+                    .unwrap_or_else(gtk4::gdk::ModifierType::empty);
+
+                keyboards::gdk_mods_to_winit_mods(modifiers)
+            } else {
+                ModifiersState::empty()
+            };
+
+            {
+                let mut state = state.lock().unwrap();
+                if state.has_focus == focused {
+                    return;
+                }
+
+                state.has_focus = focused;
+                state.modifiers = modifiers;
+                if !focused {
+                    state.held_key_press = None;
+                }
+            }
+
+            let mut shared = shared.borrow_mut();
+            let event_sink = &mut shared.events_sink;
+            if focused {
+                let focus_event = WindowEvent::Focused(true);
+                let mods_event = WindowEvent::ModifiersChanged(modifiers.into());
+                event_sink.push_window_event(focus_event, window_id);
+                event_sink.push_window_event(mods_event, window_id);
+            } else {
+                let mods_event = WindowEvent::ModifiersChanged(ModifiersState::empty().into());
+                let focus_event = WindowEvent::Focused(false);
+                event_sink.push_window_event(mods_event, window_id);
+                event_sink.push_window_event(focus_event, window_id);
+            }
         });
     }
 
@@ -332,10 +397,12 @@ impl CoreWindow for Window {
     }
 
     fn request_ime_update(&self, _request: ImeRequest) -> Result<(), ImeRequestError> {
+        // TODO: implement IME support.
         Err(ImeRequestError::NotSupported)
     }
 
     fn ime_capabilities(&self) -> Option<ImeCapabilities> {
+        // TODO: report real IME capabilities
         None
     }
 
@@ -344,7 +411,7 @@ impl CoreWindow for Window {
     }
 
     fn has_focus(&self) -> bool {
-        todo!("GTK4 has_focus is not implemented yet")
+        self.state.lock().unwrap().has_focus
     }
 
     fn request_user_attention(&self, _request_type: Option<UserAttentionType>) {
