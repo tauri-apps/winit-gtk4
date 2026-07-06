@@ -21,6 +21,7 @@ use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
 use crate::sink::CommandSink;
 
 mod keyboards;
+mod pointers;
 mod state;
 
 pub(crate) use state::WindowState;
@@ -116,6 +117,7 @@ impl Window {
         Self::connect_focus(event_loop, gtk_window, window_id, state);
         Self::connect_surface_layout(event_loop, gtk_window, window_id, state);
         keyboards::connect(event_loop, gtk_window, window_id, state);
+        pointers::connect(event_loop, gtk_window, window_id, state);
     }
 
     fn connect_close_request(
