@@ -29,7 +29,6 @@ pub(crate) fn connect(
             let event = WindowEvent::PointerEntered {
                 device_id: pointer.device_id,
                 position: {
-                    let state: &Arc<Mutex<WindowState>> = &state;
                     let scale_factor = state.lock().unwrap().scale_factor;
                     LogicalPosition::new(x, y).to_physical(scale_factor)
                 },
@@ -63,11 +62,11 @@ pub(crate) fn connect(
         let state = state.clone();
         controller.connect_leave(move |controller| {
             let pointer = PointerMetadata::from_controller(controller);
-            let position =
-                controller.current_event().and_then(|event| event.position()).map(|(x, y)| {
-                    let scale_factor = state.lock().unwrap().scale_factor;
-                    LogicalPosition::new(x, y).to_physical(scale_factor)
-                });
+            let position = controller.current_event().and_then(|event| {
+                let (x, y) = event.position()?;
+                let scale_factor = state.lock().unwrap().scale_factor;
+                Some(LogicalPosition::new(x, y).to_physical(scale_factor))
+            });
 
             let event = WindowEvent::PointerLeft {
                 device_id: pointer.device_id,
@@ -157,7 +156,7 @@ impl PointerMetadata {
     }
 }
 
-fn device_id(device: &gtk4::gdk::Device) -> Option<DeviceId> {
+pub(crate) fn device_id(device: &gtk4::gdk::Device) -> Option<DeviceId> {
     // GDK only exposes a backend-native numeric pointer device id for X11/XInput2.
     // Wayland devices fail this downcast and keep winit's `device_id: None` behavior
     // matching the current winit-wayland implementation.
@@ -186,9 +185,9 @@ fn tablet_tool_kind(tool_type: gtk4::gdk::DeviceToolType) -> TabletToolKind {
 fn tablet_tool_data(event: Option<&gtk4::gdk::Event>) -> Option<TabletToolData> {
     let event = event?;
     let data = TabletToolData {
-        force: axis(event, gtk4::gdk::AxisUse::Pressure).map(Force::Normalized),
+        force: event.axis(gtk4::gdk::AxisUse::Pressure).map(Force::Normalized),
         tangential_force: None,
-        twist: axis(event, gtk4::gdk::AxisUse::Rotation).map(rotation_to_twist),
+        twist: event.axis(gtk4::gdk::AxisUse::Rotation).map(rotation_to_twist),
         tilt: tablet_tool_tilt(event),
         angle: None,
     };
@@ -197,14 +196,10 @@ fn tablet_tool_data(event: Option<&gtk4::gdk::Event>) -> Option<TabletToolData> 
 }
 
 fn tablet_tool_tilt(event: &gtk4::gdk::Event) -> Option<TabletToolTilt> {
-    let x = axis(event, gtk4::gdk::AxisUse::Xtilt)?;
-    let y = axis(event, gtk4::gdk::AxisUse::Ytilt)?;
+    let x = event.axis(gtk4::gdk::AxisUse::Xtilt)?;
+    let y = event.axis(gtk4::gdk::AxisUse::Ytilt)?;
 
     Some(TabletToolTilt { x: tilt_axis_to_degrees(x), y: tilt_axis_to_degrees(y) })
-}
-
-fn axis(event: &gtk4::gdk::Event, axis: gtk4::gdk::AxisUse) -> Option<f64> {
-    event.axis(axis).filter(|value| value.is_finite())
 }
 
 fn tilt_axis_to_degrees(value: f64) -> i8 {
