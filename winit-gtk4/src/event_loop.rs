@@ -23,7 +23,7 @@ use winit_core::monitor::MonitorHandle;
 use winit_core::window::{Theme, Window as CoreWindow, WindowAttributes, WindowId};
 
 use crate::sink::{Command, CommandSink, EventSink};
-use crate::window::{Window, WindowCommand};
+use crate::window::{Window, WindowCommand, theme_from_settings};
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -422,7 +422,7 @@ impl CoreActiveEventLoop for ActiveEventLoop {
     }
 
     fn system_theme(&self) -> Option<Theme> {
-        None
+        gtk4::Settings::default().map(|settings| theme_from_settings(&settings))
     }
 
     fn set_control_flow(&self, control_flow: ControlFlow) {

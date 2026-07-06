@@ -71,6 +71,16 @@ impl Window {
         let title = attributes.title;
         let visible = attributes.visible;
 
+        let preferred_theme = attributes.preferred_theme;
+        let settings = WidgetExt::settings(&gtk_window);
+        if preferred_theme.is_some() {
+            settings.set_gtk_application_prefer_dark_theme(matches!(
+                preferred_theme,
+                Some(Theme::Dark)
+            ));
+        }
+        let theme = Some(theme_from_settings(&settings));
+
         let state = WindowState {
             surface_size,
             last_layout: None,
@@ -79,6 +89,7 @@ impl Window {
             has_focus: false,
             modifiers: ModifiersState::default(),
             held_key_press: None,
+            theme,
             title,
         };
         let state = Arc::new(Mutex::new(state));
@@ -117,6 +128,7 @@ impl Window {
         Self::connect_destroy(event_loop, gtk_window, window_id);
         Self::connect_focus(event_loop, gtk_window, window_id, state);
         Self::connect_surface_layout(event_loop, gtk_window, window_id, state);
+        Self::connect_theme(event_loop, gtk_window, window_id, state);
         keyboards::connect(event_loop, gtk_window, window_id, state);
         pointers::connect(event_loop, gtk_window, window_id, state);
         touches::connect(event_loop, gtk_window, window_id, state);
@@ -241,6 +253,32 @@ impl Window {
                         shared.events_sink.push_window_event(event, window_id);
                     }
                 });
+            }
+        });
+    }
+
+    fn connect_theme(
+        event_loop: &ActiveEventLoop,
+        gtk_window: &gtk4::ApplicationWindow,
+        window_id: WindowId,
+        state: &Arc<Mutex<WindowState>>,
+    ) {
+        let shared = event_loop.shared.clone();
+        let state = state.clone();
+        let settings = WidgetExt::settings(gtk_window);
+
+        settings.connect_gtk_application_prefer_dark_theme_notify(move |settings| {
+            let theme = theme_from_settings(settings);
+            let changed = {
+                let mut state = state.lock().unwrap();
+                let changed = state.theme != Some(theme);
+                state.theme = Some(theme);
+                changed
+            };
+
+            if changed {
+                let mut shared = shared.borrow_mut();
+                shared.events_sink.push_window_event(WindowEvent::ThemeChanged(theme), window_id);
             }
         });
     }
@@ -422,12 +460,15 @@ impl CoreWindow for Window {
         todo!("GTK4 request_user_attention is not implemented yet")
     }
 
-    fn set_theme(&self, _theme: Option<Theme>) {
-        todo!("GTK4 set_theme is not implemented yet")
+    fn set_theme(&self, theme: Option<Theme>) {
+        let is_dark = matches!(theme, Some(Theme::Dark));
+        let effective_theme = if is_dark { Theme::Dark } else { Theme::Light };
+        self.state.lock().unwrap().theme = Some(effective_theme);
+        self.queue_command(WindowCommand::SetTheme(theme));
     }
 
     fn theme(&self) -> Option<Theme> {
-        None
+        self.state.lock().unwrap().theme
     }
 
     fn set_content_protected(&self, _protected: bool) {
@@ -495,6 +536,7 @@ impl CoreWindow for Window {
 pub(crate) enum WindowCommand {
     Close,
     RequestRedraw,
+    SetTheme(Option<Theme>),
     SetTitle(String),
     SetVisible(bool),
 }
@@ -504,6 +546,11 @@ impl WindowCommand {
         match self {
             WindowCommand::Close => window.close(),
             WindowCommand::RequestRedraw => { /* Handled in event_loop.rs */ },
+            WindowCommand::SetTheme(theme) => {
+                let is_dark = matches!(theme, Some(Theme::Dark));
+                let settings = WidgetExt::settings(window);
+                settings.set_gtk_application_prefer_dark_theme(is_dark)
+            },
             WindowCommand::SetTitle(title) => window.set_title(Some(&title)),
             WindowCommand::SetVisible(visible) => window.set_visible(visible),
         }
@@ -526,6 +573,11 @@ fn monitor_under_pointer(display: &gtk4::gdk::Display) -> Option<gtk4::gdk::Moni
 
 fn first_monitor(display: &gtk4::gdk::Display) -> Option<gtk4::gdk::Monitor> {
     display.monitors().item(0).and_then(|monitor| monitor.downcast::<gtk4::gdk::Monitor>().ok())
+}
+
+pub(crate) fn theme_from_settings(settings: &gtk4::Settings) -> Theme {
+    let is_dark = settings.is_gtk_application_prefer_dark_theme();
+    if is_dark { Theme::Dark } else { Theme::Light }
 }
 
 impl rwh_06::HasWindowHandle for Window {
