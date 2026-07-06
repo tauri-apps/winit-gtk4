@@ -84,6 +84,7 @@ impl Window {
         let state = WindowState {
             surface_size,
             last_layout: None,
+            last_position: None,
             scale_factor,
             visible,
             has_focus: false,
@@ -127,6 +128,7 @@ impl Window {
         Self::connect_close_request(event_loop, gtk_window, window_id);
         Self::connect_destroy(event_loop, gtk_window, window_id);
         Self::connect_focus(event_loop, gtk_window, window_id, state);
+        Self::connect_moved(event_loop, gtk_window, window_id, state);
         Self::connect_surface_layout(event_loop, gtk_window, window_id, state);
         Self::connect_theme(event_loop, gtk_window, window_id, state);
         keyboards::connect(event_loop, gtk_window, window_id, state);
@@ -252,6 +254,62 @@ impl Window {
                         let mut shared = shared.borrow_mut();
                         shared.events_sink.push_window_event(event, window_id);
                     }
+                });
+            }
+        });
+    }
+
+    fn connect_moved(
+        event_loop: &ActiveEventLoop,
+        gtk_window: &gtk4::ApplicationWindow,
+        window_id: WindowId,
+        state: &Arc<Mutex<WindowState>>,
+    ) {
+        let shared = event_loop.shared.clone();
+        let state = state.clone();
+
+        gtk_window.connect_realize(move |window| {
+            let Some(surface) = window.surface() else {
+                return;
+            };
+            let Ok(surface) = surface.downcast::<gdk4_x11::X11Surface>() else {
+                return;
+            };
+            let Ok(display) = surface.display().downcast::<gdk4_x11::X11Display>() else {
+                return;
+            };
+
+            let xwindow = surface.xid();
+            let shared = shared.clone();
+            let state = state.clone();
+
+            unsafe {
+                display.connect_xevent(move |_, xevent| {
+                    let xevent = &*xevent;
+                    if xevent.get_type() != gdk4_x11::x11::xlib::ConfigureNotify {
+                        return gtk4::glib::Propagation::Proceed;
+                    }
+
+                    let configure = xevent.configure;
+                    if configure.window != xwindow {
+                        return gtk4::glib::Propagation::Proceed;
+                    }
+
+                    let position = PhysicalPosition::new(configure.x, configure.y);
+                    let moved = {
+                        let mut state = state.lock().unwrap();
+                        let moved = state.last_position.is_some_and(|last| last != position);
+                        state.last_position = Some(position);
+                        moved
+                    };
+
+                    if moved {
+                        let mut shared = shared.borrow_mut();
+                        let events_sink = &mut shared.events_sink;
+                        events_sink.push_window_event(WindowEvent::Moved(position), window_id);
+                    }
+
+                    gtk4::glib::Propagation::Proceed
                 });
             }
         });
