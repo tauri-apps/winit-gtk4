@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
@@ -17,7 +19,7 @@ use winit_core::window::{
     WindowLevel,
 };
 
-use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
+use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle, SharedState};
 use crate::sink::CommandSink;
 
 mod keyboards;
@@ -128,8 +130,7 @@ impl Window {
         Self::connect_close_request(event_loop, gtk_window, window_id);
         Self::connect_destroy(event_loop, gtk_window, window_id);
         Self::connect_focus(event_loop, gtk_window, window_id, state);
-        Self::connect_moved(event_loop, gtk_window, window_id, state);
-        Self::connect_surface_layout(event_loop, gtk_window, window_id, state);
+        Self::connect_surface_events(event_loop, gtk_window, window_id, state);
         Self::connect_theme(event_loop, gtk_window, window_id, state);
         keyboards::connect(event_loop, gtk_window, window_id, state);
         pointers::connect(event_loop, gtk_window, window_id, state);
@@ -214,52 +215,7 @@ impl Window {
         });
     }
 
-    fn connect_surface_layout(
-        event_loop: &ActiveEventLoop,
-        gtk_window: &gtk4::ApplicationWindow,
-        window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
-    ) {
-        let shared = event_loop.shared.clone();
-        let state = state.clone();
-
-        gtk_window.connect_realize(move |window| {
-            if let Some(surface) = window.surface() {
-                let shared = shared.clone();
-                let state = state.clone();
-                surface.connect_layout(move |_, width, height| {
-                    let width = width.max(0) as u32;
-                    let height = height.max(0) as u32;
-                    let scale_factor = state.lock().unwrap().scale_factor;
-                    let surface_size = LogicalSize::new(width, height).to_physical(scale_factor);
-
-                    let resized = {
-                        let mut state = state.lock().unwrap();
-                        let resized = state
-                            .last_layout
-                            .map(|last_layout| last_layout != surface_size)
-                            .unwrap_or(true);
-
-                        if resized {
-                            state.last_layout = Some(surface_size);
-                            state.surface_size = surface_size;
-                            true
-                        } else {
-                            false
-                        }
-                    };
-
-                    if resized {
-                        let event = WindowEvent::SurfaceResized(surface_size);
-                        let mut shared = shared.borrow_mut();
-                        shared.events_sink.push_window_event(event, window_id);
-                    }
-                });
-            }
-        });
-    }
-
-    fn connect_moved(
+    fn connect_surface_events(
         event_loop: &ActiveEventLoop,
         gtk_window: &gtk4::ApplicationWindow,
         window_id: WindowId,
@@ -272,47 +228,96 @@ impl Window {
             let Some(surface) = window.surface() else {
                 return;
             };
-            let Ok(surface) = surface.downcast::<gdk4_x11::X11Surface>() else {
-                return;
+
+            Self::connect_surface_layout(&shared, &surface, window_id, &state);
+            Self::connect_moved(&shared, &surface, window_id, &state);
+        });
+    }
+
+    fn connect_surface_layout(
+        shared: &Rc<RefCell<SharedState>>,
+        surface: &gtk4::gdk::Surface,
+        window_id: WindowId,
+        state: &Arc<Mutex<WindowState>>,
+    ) {
+        let shared = shared.clone();
+        let state = state.clone();
+        surface.connect_layout(move |_, width, height| {
+            let width = width.max(0) as u32;
+            let height = height.max(0) as u32;
+            let scale_factor = state.lock().unwrap().scale_factor;
+            let surface_size = LogicalSize::new(width, height).to_physical(scale_factor);
+
+            let resized = {
+                let mut state = state.lock().unwrap();
+                let resized = state
+                    .last_layout
+                    .map(|last_layout| last_layout != surface_size)
+                    .unwrap_or(true);
+
+                if resized {
+                    state.last_layout = Some(surface_size);
+                    state.surface_size = surface_size;
+                    true
+                } else {
+                    false
+                }
             };
-            let Ok(display) = surface.display().downcast::<gdk4_x11::X11Display>() else {
-                return;
-            };
 
-            let xwindow = surface.xid();
-            let shared = shared.clone();
-            let state = state.clone();
-
-            unsafe {
-                display.connect_xevent(move |_, xevent| {
-                    let xevent = &*xevent;
-                    if xevent.get_type() != gdk4_x11::x11::xlib::ConfigureNotify {
-                        return gtk4::glib::Propagation::Proceed;
-                    }
-
-                    let configure = xevent.configure;
-                    if configure.window != xwindow {
-                        return gtk4::glib::Propagation::Proceed;
-                    }
-
-                    let position = PhysicalPosition::new(configure.x, configure.y);
-                    let moved = {
-                        let mut state = state.lock().unwrap();
-                        let moved = state.last_position.is_some_and(|last| last != position);
-                        state.last_position = Some(position);
-                        moved
-                    };
-
-                    if moved {
-                        let mut shared = shared.borrow_mut();
-                        let events_sink = &mut shared.events_sink;
-                        events_sink.push_window_event(WindowEvent::Moved(position), window_id);
-                    }
-
-                    gtk4::glib::Propagation::Proceed
-                });
+            if resized {
+                let event = WindowEvent::SurfaceResized(surface_size);
+                let mut shared = shared.borrow_mut();
+                shared.events_sink.push_window_event(event, window_id);
             }
         });
+    }
+
+    fn connect_moved(
+        shared: &Rc<RefCell<SharedState>>,
+        surface: &gtk4::gdk::Surface,
+        window_id: WindowId,
+        state: &Arc<Mutex<WindowState>>,
+    ) {
+        let Ok(surface) = surface.clone().downcast::<gdk4_x11::X11Surface>() else {
+            return;
+        };
+        let Ok(display) = surface.display().downcast::<gdk4_x11::X11Display>() else {
+            return;
+        };
+
+        let xwindow = surface.xid();
+        let shared = shared.clone();
+        let state = state.clone();
+
+        unsafe {
+            display.connect_xevent(move |_, xevent| {
+                let xevent = &*xevent;
+                if xevent.get_type() != gdk4_x11::x11::xlib::ConfigureNotify {
+                    return gtk4::glib::Propagation::Proceed;
+                }
+
+                let configure = xevent.configure;
+                if configure.window != xwindow {
+                    return gtk4::glib::Propagation::Proceed;
+                }
+
+                let position = PhysicalPosition::new(configure.x, configure.y);
+                let moved = {
+                    let mut state = state.lock().unwrap();
+                    let moved = state.last_position.is_some_and(|last| last != position);
+                    state.last_position = Some(position);
+                    moved
+                };
+
+                if moved {
+                    let mut shared = shared.borrow_mut();
+                    let events_sink = &mut shared.events_sink;
+                    events_sink.push_window_event(WindowEvent::Moved(position), window_id);
+                }
+
+                gtk4::glib::Propagation::Proceed
+            });
+        }
     }
 
     fn connect_theme(
