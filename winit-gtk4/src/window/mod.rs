@@ -7,7 +7,7 @@ use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position,
 use gdk4_wayland::prelude::WaylandSurfaceExtManual;
 use gtk4::gdk::prelude::{DeviceExt, DisplayExt, SeatExt, SurfaceExt};
 use gtk4::prelude::*;
-use winit_core::cursor::Cursor;
+use winit_core::cursor::{Cursor, CursorIcon};
 use winit_core::error::RequestError;
 use winit_core::event::WindowEvent;
 use winit_core::icon::Icon;
@@ -53,6 +53,10 @@ impl Window {
         event_loop: &ActiveEventLoop,
         attributes: WindowAttributes,
     ) -> Result<Self, RequestError> {
+        // Clone the app out of `SharedState` before `present()`, which can
+        // synchronously realize the widget and re-enter callbacks that mutate it.
+        let app = event_loop.shared.borrow().app.clone();
+
         let scale_factor = guessed_monitor().map(|monitor| monitor.scale()).unwrap_or(1.0);
 
         let surface_size = attributes
@@ -60,13 +64,37 @@ impl Window {
             .map(|size| size.to_logical::<u32>(scale_factor))
             .unwrap_or_else(|| LogicalSize::new(800, 600));
 
-        let gtk_window = gtk4::ApplicationWindow::builder()
-            .application(&event_loop.shared.borrow().app)
-            .title(&attributes.title)
+        let fullscreen = attributes.fullscreen.is_some();
+
+        let mut builder = gtk4::ApplicationWindow::builder()
+            .application(&app)
+            .title(attributes.title.as_str())
             .default_width(surface_size.width as i32)
             .default_height(surface_size.height as i32)
-            .build();
+            .resizable(attributes.resizable)
+            .decorated(attributes.decorations)
+            // TODO: Support minimizable/maximizable button hints
+            .deletable(attributes.enabled_buttons.contains(WindowButtons::CLOSE))
+            .maximized(attributes.maximized && !fullscreen)
+            .fullscreened(fullscreen);
 
+        // TODO: support max_surface_size
+        if let Some(min_surface_size) = attributes.min_surface_size {
+            let (width, height): (i32, i32) =
+                min_surface_size.to_logical::<i32>(scale_factor).into();
+            builder = builder.width_request(width).height_request(height);
+        }
+
+        let initial_cursor = match attributes.cursor {
+            Cursor::Icon(cursor_icon) => gdk_cursor_from_icon(cursor_icon),
+            // TODO: Support GTK-backed custom cursors
+            Cursor::Custom(_) => None,
+        };
+        if let Some(cursor) = initial_cursor.as_ref() {
+            builder = builder.cursor(cursor);
+        }
+
+        let gtk_window = builder.build();
         let window_id = WindowId::from_raw(gtk_window.as_ptr() as usize);
 
         let title = attributes.title;
@@ -671,6 +699,12 @@ impl WindowCommand {
             WindowCommand::SetVisible(visible) => window.set_visible(visible),
         }
     }
+}
+
+fn gdk_cursor_from_icon(cursor_icon: CursorIcon) -> Option<gtk4::gdk::Cursor> {
+    gtk4::gdk::Cursor::from_name(cursor_icon.name(), None).or_else(|| {
+        cursor_icon.alt_names().iter().find_map(|name| gtk4::gdk::Cursor::from_name(name, None))
+    })
 }
 
 fn guessed_monitor() -> Option<gtk4::gdk::Monitor> {
