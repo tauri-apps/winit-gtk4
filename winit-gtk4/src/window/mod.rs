@@ -52,10 +52,9 @@ impl Window {
         event_loop: &ActiveEventLoop,
         attributes: WindowAttributes,
     ) -> Result<Self, RequestError> {
-        let scale_factor =
-            guessed_monitor().map(|monitor| monitor.scale_factor().max(1) as f64).unwrap_or(1.0);
+        let scale_factor = guessed_monitor().map(|monitor| monitor.scale()).unwrap_or(1.0);
 
-        let logical_size = attributes
+        let surface_size = attributes
             .surface_size
             .map(|size| size.to_logical::<u32>(scale_factor))
             .unwrap_or_else(|| LogicalSize::new(800, 600));
@@ -63,11 +62,10 @@ impl Window {
         let gtk_window = gtk4::ApplicationWindow::builder()
             .application(&event_loop.shared.borrow().app)
             .title(&attributes.title)
-            .default_width(logical_size.width as i32)
-            .default_height(logical_size.height as i32)
+            .default_width(surface_size.width as i32)
+            .default_height(surface_size.height as i32)
             .build();
 
-        let surface_size = logical_size.to_physical::<u32>(scale_factor);
         let window_id = WindowId::from_raw(gtk_window.as_ptr() as usize);
 
         let title = attributes.title;
@@ -229,8 +227,53 @@ impl Window {
                 return;
             };
 
+            Self::connect_scale_factor(&shared, &surface, window_id, &state);
             Self::connect_surface_layout(&shared, &surface, window_id, &state);
             Self::connect_moved(&shared, &surface, window_id, &state);
+        });
+    }
+
+    fn connect_scale_factor(
+        shared: &Rc<RefCell<SharedState>>,
+        surface: &gtk4::gdk::Surface,
+        window_id: WindowId,
+        state: &Arc<Mutex<WindowState>>,
+    ) {
+        let scale_factor = surface.scale();
+        let surface_size = {
+            let mut state = state.lock().unwrap();
+            let logical_size = state.surface_size;
+
+            // Window creation only has a guessed monitor scale. Once the GDK surface exists,
+            // seed the state from the actual surface scale before listening for later changes.
+            state.scale_factor = scale_factor;
+
+            logical_size.to_physical(scale_factor)
+        };
+
+        // Push inital scale factor event
+        {
+            let mut shared = shared.borrow_mut();
+            shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window_id);
+        }
+
+        let shared = shared.clone();
+        let state = state.clone();
+        surface.connect_scale_notify(move |surface| {
+            let scale_factor = surface.scale();
+            let surface_size = {
+                let mut state = state.lock().unwrap();
+                if state.scale_factor == scale_factor {
+                    return;
+                }
+
+                let logical_size = state.surface_size;
+                state.scale_factor = scale_factor;
+                logical_size.to_physical(scale_factor)
+            };
+
+            let mut shared = shared.borrow_mut();
+            shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window_id);
         });
     }
 
@@ -245,26 +288,26 @@ impl Window {
         surface.connect_layout(move |_, width, height| {
             let width = width.max(0) as u32;
             let height = height.max(0) as u32;
-            let scale_factor = state.lock().unwrap().scale_factor;
-            let surface_size = LogicalSize::new(width, height).to_physical(scale_factor);
+            let logical_size = LogicalSize::new(width, height);
 
-            let resized = {
+            let surface_size = {
                 let mut state = state.lock().unwrap();
+                let surface_size = logical_size.to_physical(state.scale_factor);
                 let resized = state
                     .last_layout
                     .map(|last_layout| last_layout != surface_size)
                     .unwrap_or(true);
 
                 if resized {
+                    state.surface_size = logical_size;
                     state.last_layout = Some(surface_size);
-                    state.surface_size = surface_size;
-                    true
+                    Some(surface_size)
                 } else {
-                    false
+                    None
                 }
             };
 
-            if resized {
+            if let Some(surface_size) = surface_size {
                 let event = WindowEvent::SurfaceResized(surface_size);
                 let mut shared = shared.borrow_mut();
                 shared.events_sink.push_window_event(event, window_id);
@@ -391,11 +434,14 @@ impl CoreWindow for Window {
     }
 
     fn surface_size(&self) -> PhysicalSize<u32> {
-        self.state.lock().unwrap().surface_size
+        let state = self.state.lock().unwrap();
+        state.surface_size.to_physical(state.scale_factor)
     }
 
-    fn request_surface_size(&self, _size: Size) -> Option<PhysicalSize<u32>> {
-        todo!("GTK4 request_surface_size is not implemented yet")
+    fn request_surface_size(&self, size: Size) -> Option<PhysicalSize<u32>> {
+        let scale_factor = self.state.lock().unwrap().scale_factor;
+        self.queue_command(WindowCommand::SetSurfaceSize { size, scale_factor });
+        None
     }
 
     fn outer_size(&self) -> PhysicalSize<u32> {
@@ -599,6 +645,7 @@ impl CoreWindow for Window {
 pub(crate) enum WindowCommand {
     Close,
     RequestRedraw,
+    SetSurfaceSize { size: Size, scale_factor: f64 },
     SetTheme(Option<Theme>),
     SetTitle(String),
     SetVisible(bool),
@@ -609,6 +656,10 @@ impl WindowCommand {
         match self {
             WindowCommand::Close => window.close(),
             WindowCommand::RequestRedraw => { /* Handled in event_loop.rs */ },
+            WindowCommand::SetSurfaceSize { size, scale_factor } => {
+                let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
+                window.set_default_size(width, height);
+            },
             WindowCommand::SetTheme(theme) => {
                 let is_dark = matches!(theme, Some(Theme::Dark));
                 let settings = WidgetExt::settings(window);

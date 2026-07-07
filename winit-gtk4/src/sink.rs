@@ -1,5 +1,6 @@
 use std::vec::Drain;
 
+use dpi::PhysicalSize;
 use winit_core::event::WindowEvent;
 use winit_core::window::WindowId;
 
@@ -57,6 +58,16 @@ impl EventSink {
     #[inline]
     pub(crate) fn push_window_event(&mut self, event: WindowEvent, window_id: WindowId) {
         self.events.push(Event::Window { window_id, event });
+    }
+
+    #[inline]
+    pub(crate) fn push_scale_factor_changed(
+        &mut self,
+        scale_factor: f64,
+        surface_size: PhysicalSize<u32>,
+        window_id: WindowId,
+    ) {
+        self.events.push(Event::ScaleFactorChanged { window_id, scale_factor, surface_size });
     }
 
     #[inline]
