@@ -78,7 +78,7 @@ rustix = { version = "1.0.7", default-features = false }
 x11-dl = "2.19.1"
 x11rb = { version = "0.13.0", default-features = false }
 xkbcommon-dl = "0.4.2"
-gtk4 = "0.11.4"
+gtk4 = { version = "0.11.4", features = ["v4_14"] }
 gdk4-wayland = "0.11.4"
 gdk4-x11 = { version = "0.11.4", features = ["xlib"] }
 

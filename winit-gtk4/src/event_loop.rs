@@ -8,11 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use dpi::PhysicalSize;
 use gtk4::prelude::*;
 use winit_core::application::ApplicationHandler;
 use winit_core::cursor::{CustomCursor as CoreCustomCursor, CustomCursorSource};
 use winit_core::error::{EventLoopError, NotSupportedError, OsError, RequestError};
-use winit_core::event::{StartCause, WindowEvent};
+use winit_core::event::{StartCause, SurfaceSizeWriter, WindowEvent};
 use winit_core::event_loop::pump_events::PumpStatus;
 use winit_core::event_loop::{
     ActiveEventLoop as CoreActiveEventLoop, ControlFlow, DeviceEvents,
@@ -28,6 +29,7 @@ use crate::window::{Window, WindowCommand, theme_from_settings};
 #[derive(Debug)]
 pub(crate) enum Event {
     Window { window_id: WindowId, event: winit_core::event::WindowEvent },
+    ScaleFactorChanged { window_id: WindowId, scale_factor: f64, surface_size: PhysicalSize<u32> },
 }
 
 #[derive(Debug)]
@@ -335,6 +337,30 @@ impl EventLoop {
             match event {
                 Event::Window { window_id, event } => {
                     app.window_event(&self.active_event_loop, window_id, event);
+                },
+                Event::ScaleFactorChanged { window_id, scale_factor, surface_size } => {
+                    let old_surface_size = surface_size;
+                    let surface_size = Arc::new(Mutex::new(surface_size));
+                    let event = WindowEvent::ScaleFactorChanged {
+                        scale_factor,
+                        surface_size_writer: SurfaceSizeWriter::new(Arc::downgrade(&surface_size)),
+                    };
+
+                    app.window_event(&self.active_event_loop, window_id, event);
+
+                    let surface_size = *surface_size.lock().unwrap();
+                    if surface_size != old_surface_size {
+                        let window = {
+                            let shared = self.active_event_loop.shared.borrow();
+                            shared.windows.get(&window_id).cloned()
+                        };
+
+                        if let Some(window) = window {
+                            let logical_size = surface_size.to_logical::<i32>(scale_factor);
+                            let (width, height) = logical_size.into();
+                            window.set_default_size(width, height);
+                        }
+                    }
                 },
             }
         }
