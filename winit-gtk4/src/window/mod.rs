@@ -22,6 +22,7 @@ use winit_core::window::{
 use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle, SharedState};
 use crate::sink::CommandSink;
 
+mod dnd;
 mod keyboards;
 mod pointers;
 mod state;
@@ -130,6 +131,7 @@ impl Window {
         Self::connect_focus(event_loop, gtk_window, window_id, state);
         Self::connect_surface_events(event_loop, gtk_window, window_id, state);
         Self::connect_theme(event_loop, gtk_window, window_id, state);
+        dnd::connect(event_loop, gtk_window, window_id, state);
         keyboards::connect(event_loop, gtk_window, window_id, state);
         pointers::connect(event_loop, gtk_window, window_id, state);
         touches::connect(event_loop, gtk_window, window_id, state);
