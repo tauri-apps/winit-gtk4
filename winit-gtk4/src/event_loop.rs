@@ -64,6 +64,7 @@ pub struct PlatformSpecificEventLoopAttributes {
 #[derive(Clone)]
 pub struct ActiveEventLoop {
     pub(crate) display_handle: OwnedDisplayHandle,
+    pub(crate) xconn: Option<Arc<crate::x11::XConnection>>,
     pub(crate) shared: Rc<RefCell<SharedState>>,
     pub(crate) run_state: Rc<RunState>,
     event_loop_proxy: CoreEventLoopProxy,
@@ -128,12 +129,14 @@ impl EventLoop {
             proxy_wake_up: Arc::new(AtomicBool::new(false)),
         });
         let display_handle = OwnedDisplayHandle::new()?;
+        let xconn = gtk4::gdk::Display::default().and_then(crate::x11::XConnection::new);
         let event_loop_proxy =
             EventLoopProxy::new(run_state.proxy_wake_up.clone(), context.clone()).into();
 
         Ok(Self {
             active_event_loop: ActiveEventLoop {
                 display_handle,
+                xconn,
                 shared,
                 run_state,
                 event_loop_proxy,
