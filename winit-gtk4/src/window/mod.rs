@@ -4,7 +4,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
-use gdk4_wayland::prelude::WaylandSurfaceExtManual;
 use gtk4::gdk::prelude::{DeviceExt, DisplayExt, SeatExt, SurfaceExt};
 use gtk4::prelude::*;
 use winit_core::cursor::{Cursor, CursorIcon};
@@ -63,6 +62,9 @@ impl Window {
             .surface_size
             .map(|size| size.to_logical::<u32>(scale_factor))
             .unwrap_or_else(|| LogicalSize::new(800, 600));
+
+        let position =
+            attributes.position.map(|position| position.to_physical::<i32>(scale_factor));
 
         let fullscreen = attributes.fullscreen.is_some();
 
@@ -125,7 +127,13 @@ impl Window {
         let state = Arc::new(Mutex::new(state));
 
         let commands = event_loop.shared.borrow().commands.clone();
-        Self::connect_events(event_loop, &gtk_window, window_id, &state);
+        Self::connect_events(event_loop, &gtk_window, window_id, &state, position);
+
+        if position.is_some() {
+            // Realize before `present()` so that we can set initial position before
+            // presenting the window to user.
+            WidgetExt::realize(&gtk_window);
+        }
 
         if visible {
             gtk_window.present();
@@ -153,11 +161,12 @@ impl Window {
         gtk_window: &gtk4::ApplicationWindow,
         window_id: WindowId,
         state: &Arc<Mutex<WindowState>>,
+        position: Option<PhysicalPosition<i32>>,
     ) {
         Self::connect_close_request(event_loop, gtk_window, window_id);
         Self::connect_destroy(event_loop, gtk_window, window_id);
         Self::connect_focus(event_loop, gtk_window, window_id, state);
-        Self::connect_surface_events(event_loop, gtk_window, window_id, state);
+        Self::connect_surface_events(event_loop, gtk_window, window_id, state, position);
         Self::connect_theme(event_loop, gtk_window, window_id, state);
         dnd::connect(event_loop, gtk_window, window_id, state);
         keyboards::connect(event_loop, gtk_window, window_id, state);
@@ -248,6 +257,7 @@ impl Window {
         gtk_window: &gtk4::ApplicationWindow,
         window_id: WindowId,
         state: &Arc<Mutex<WindowState>>,
+        position: Option<PhysicalPosition<i32>>,
     ) {
         let shared = event_loop.shared.clone();
         let state = state.clone();
@@ -260,6 +270,13 @@ impl Window {
             Self::connect_scale_factor(&shared, &surface, window_id, &state);
             Self::connect_surface_layout(&shared, &surface, window_id, &state);
             Self::connect_moved(&shared, &surface, window_id, &state);
+
+            if let Some(position) = position {
+                let xwindow = crate::x11::XWindow::from_surface(&surface);
+                if let Some(xwindow) = xwindow {
+                    xwindow.set_position(position);
+                }
+            }
         });
     }
 
@@ -459,8 +476,9 @@ impl CoreWindow for Window {
         todo!("GTK4 outer_position is not implemented yet")
     }
 
-    fn set_outer_position(&self, _position: Position) {
-        todo!("GTK4 set_outer_position is not implemented yet")
+    fn set_outer_position(&self, position: Position) {
+        let scale_factor = self.state.lock().unwrap().scale_factor;
+        self.queue_command(WindowCommand::SetOuterPosition { position, scale_factor });
     }
 
     fn surface_size(&self) -> PhysicalSize<u32> {
@@ -676,6 +694,7 @@ pub(crate) enum WindowCommand {
     Close,
     RequestRedraw,
     SetSurfaceSize { size: Size, scale_factor: f64 },
+    SetOuterPosition { position: Position, scale_factor: f64 },
     SetTheme(Option<Theme>),
     SetTitle(String),
     SetVisible(bool),
@@ -689,6 +708,14 @@ impl WindowCommand {
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
                 let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
                 window.set_default_size(width, height);
+            },
+            WindowCommand::SetOuterPosition { position, scale_factor } => {
+                let surface = window.surface();
+                let xwindow = surface.and_then(|s| crate::x11::XWindow::from_surface(&s));
+                if let Some(xwindow) = xwindow {
+                    let position = position.to_physical::<i32>(scale_factor);
+                    xwindow.set_position(position);
+                }
             },
             WindowCommand::SetTheme(theme) => {
                 let is_dark = matches!(theme, Some(Theme::Dark));
@@ -747,17 +774,9 @@ impl rwh_06::HasDisplayHandle for Window {
 fn raw_window_handle(window: &gtk4::ApplicationWindow) -> Option<rwh_06::RawWindowHandle> {
     let surface = window.surface()?;
 
-    if let Ok(surface) = surface.clone().downcast::<gdk4_wayland::WaylandSurface>() {
-        let surface = surface.wl_surface_raw()?;
-        return Some(rwh_06::WaylandWindowHandle::new(surface).into());
+    if let Some(handle) = crate::wayland::raw_window_handle(&surface) {
+        return Some(handle);
     }
 
-    if let Ok(surface) = surface.downcast::<gdk4_x11::X11Surface>() {
-        let window = surface.xid() as _;
-        if window != 0 {
-            return Some(rwh_06::XlibWindowHandle::new(window).into());
-        }
-    }
-
-    None
+    crate::x11::raw_window_handle(&surface)
 }

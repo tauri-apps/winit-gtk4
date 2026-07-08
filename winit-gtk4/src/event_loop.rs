@@ -24,7 +24,7 @@ use winit_core::monitor::MonitorHandle;
 use winit_core::window::{Theme, Window as CoreWindow, WindowAttributes, WindowId};
 
 use crate::sink::{Command, CommandSink, EventSink};
-use crate::window::{Window, WindowCommand, theme_from_settings};
+use crate::window::{theme_from_settings, Window, WindowCommand};
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -521,16 +521,12 @@ impl rwh_06::HasDisplayHandle for OwnedDisplayHandle {
 fn raw_display_handle() -> Result<OwnedDisplayHandle, rwh_06::HandleError> {
     let display = gtk4::gdk::Display::default().ok_or(rwh_06::HandleError::Unavailable)?;
 
-    if let Ok(display) = display.clone().downcast::<gdk4_wayland::WaylandDisplay>() {
-        let display = display.wl_display_raw().ok_or(rwh_06::HandleError::Unavailable)?;
-        return Ok(OwnedDisplayHandle::Wayland { display });
+    if let Some(handle) = crate::wayland::raw_display_handle(display.clone())? {
+        return Ok(handle);
     }
 
-    if let Ok(display) = display.downcast::<gdk4_x11::X11Display>() {
-        let xdisplay = unsafe { display.xdisplay() };
-        let xdisplay = NonNull::new(xdisplay.cast()).ok_or(rwh_06::HandleError::Unavailable)?;
-        let screen = display.screen().screen_number();
-        return Ok(OwnedDisplayHandle::Xlib { display: xdisplay, screen });
+    if let Some(handle) = crate::x11::raw_display_handle(display)? {
+        return Ok(handle);
     }
 
     Err(rwh_06::HandleError::NotSupported)
