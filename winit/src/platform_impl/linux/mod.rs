@@ -120,7 +120,7 @@ impl EventLoop {
             (None, _, true) => Backend::X,
             // GTK4 is present.
             #[cfg(gtk4_platform)]
-            (None, _, _) => Backend::Gtk4,
+            (None, ..) => Backend::Gtk4,
             // No backend is present.
             #[cfg(all(any(x11_platform, wayland_platform), not(gtk4_platform)))]
             (_, wayland_display, x11_display) => {

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Weak;
 
 use gtk4::gdk::prelude::DisplayExtManual;
 use gtk4::glib::translate::IntoGlib;
@@ -9,45 +9,55 @@ use winit_core::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit_core::keyboard::{
     Key, KeyCode, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr,
 };
-use winit_core::window::WindowId;
 
-use super::WindowState;
+use super::UnownedWindow;
 use crate::event_loop::{ActiveEventLoop, SharedState};
 
 pub(crate) fn connect(
     event_loop: &ActiveEventLoop,
     gtk_window: &gtk4::ApplicationWindow,
-    window_id: WindowId,
-    state: &Arc<Mutex<WindowState>>,
+    window: Weak<UnownedWindow>,
 ) {
     let controller = gtk4::EventControllerKey::new();
 
     {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
+        let window = window.clone();
         controller.connect_key_pressed(move |controller, keyval, keycode, modifiers| {
-            let event = key_event(controller, &state, keyval, keycode, ElementState::Pressed);
-            shared.borrow_mut().events_sink.push_window_event(event, window_id);
-            queue_modifiers_event(&shared, &state, window_id, modifiers);
+            let Some(window) = window.upgrade() else {
+                return gtk4::glib::Propagation::Proceed;
+            };
+
+            let event = key_event(controller, &window, keyval, keycode, ElementState::Pressed);
+            shared.borrow_mut().events_sink.push_window_event(event, window.id());
+            queue_modifiers_event(&shared, &window, modifiers);
             gtk4::glib::Propagation::Proceed
         });
     }
 
     {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
+        let window = window.clone();
         controller.connect_key_released(move |controller, keyval, keycode, modifiers| {
-            let event = key_event(controller, &state, keyval, keycode, ElementState::Released);
-            shared.borrow_mut().events_sink.push_window_event(event, window_id);
-            queue_modifiers_event(&shared, &state, window_id, modifiers);
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
+            let event = key_event(controller, &window, keyval, keycode, ElementState::Released);
+            shared.borrow_mut().events_sink.push_window_event(event, window.id());
+            queue_modifiers_event(&shared, &window, modifiers);
         });
     }
 
     {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
+        let window = window.clone();
         controller.connect_modifiers(move |_, modifiers| {
-            queue_modifiers_event(&shared, &state, window_id, modifiers);
+            let Some(window) = window.upgrade() else {
+                return gtk4::glib::Propagation::Proceed;
+            };
+
+            queue_modifiers_event(&shared, &window, modifiers);
             gtk4::glib::Propagation::Proceed
         });
     }
@@ -57,13 +67,12 @@ pub(crate) fn connect(
 
 fn queue_modifiers_event(
     shared: &Rc<RefCell<SharedState>>,
-    state: &Arc<Mutex<WindowState>>,
-    window_id: WindowId,
+    window: &UnownedWindow,
     modifiers: gtk4::gdk::ModifierType,
 ) {
     let modifiers = gdk_mods_to_winit_mods(modifiers);
     let changed = {
-        let mut state = state.lock().unwrap();
+        let mut state = window.state.lock().unwrap();
         let changed = state.modifiers != modifiers;
         state.modifiers = modifiers;
         changed
@@ -71,20 +80,20 @@ fn queue_modifiers_event(
 
     if changed {
         let event = WindowEvent::ModifiersChanged(Modifiers::from(modifiers));
-        shared.borrow_mut().events_sink.push_window_event(event, window_id);
+        shared.borrow_mut().events_sink.push_window_event(event, window.id());
     }
 }
 
 fn key_event(
     controller: &gtk4::EventControllerKey,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: &UnownedWindow,
     keyval: gtk4::gdk::Key,
     keycode: u32,
     state: ElementState,
 ) -> WindowEvent {
     let physical_key = winit_common::xkb::raw_keycode_to_physicalkey(keycode);
     let repeatable = key_repeats(controller, physical_key, keyval);
-    let repeat = update_repeat_state(window_state, physical_key, state, repeatable);
+    let repeat = update_repeat_state(window, physical_key, state, repeatable);
     let logical = logical_key(keyval);
     let text = key_text(keyval, state);
     let key_without_modifiers = key_without_modifiers(controller, keyval, keycode);
@@ -108,12 +117,12 @@ fn key_event(
 }
 
 fn update_repeat_state(
-    window_state: &Arc<Mutex<WindowState>>,
+    window: &UnownedWindow,
     physical_key: PhysicalKey,
     state: ElementState,
     repeatable: bool,
 ) -> bool {
-    let mut window_state = window_state.lock().unwrap();
+    let mut window_state = window.state.lock().unwrap();
 
     if !repeatable {
         return false;
@@ -137,9 +146,9 @@ fn key_repeats(
     keyval: gtk4::gdk::Key,
 ) -> bool {
     // TODO:
-    // winit X11/Wayland backends use `xkb_keymap_key_repeats`, but GDK doesn't expose the underlying keymap
-    // through the backend-neutral GTK API. Full parity needs the real xkb keymap on X11,
-    // and Wayland remains blocked by GDK not exposing the keymap fd.
+    // winit X11/Wayland backends use `xkb_keymap_key_repeats`, but GDK doesn't expose the
+    // underlying keymap through the backend-neutral GTK API. Full parity needs the real xkb
+    // keymap on X11, and Wayland remains blocked by GDK not exposing the keymap fd.
     let event_is_modifier = controller
         .current_event()
         .and_then(|event| event.downcast::<gtk4::gdk::KeyEvent>().ok())

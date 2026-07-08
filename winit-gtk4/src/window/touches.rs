@@ -1,37 +1,38 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Weak;
 
 use dpi::{LogicalPosition, PhysicalPosition};
 use gtk4::prelude::*;
 use winit_core::event::{
     ButtonSource, ElementState, FingerId, Force, PointerKind, PointerSource, WindowEvent,
 };
-use winit_core::window::WindowId;
 
-use super::WindowState;
+use super::UnownedWindow;
 use super::pointers::device_id;
 use crate::event_loop::ActiveEventLoop;
 
 pub(crate) fn connect(
     event_loop: &ActiveEventLoop,
     gtk_window: &gtk4::ApplicationWindow,
-    window_id: WindowId,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: Weak<UnownedWindow>,
 ) {
     let controller = gtk4::EventControllerLegacy::new();
     controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
     let touch_state = Rc::new(RefCell::new(TouchState::default()));
     let shared = event_loop.shared.clone();
-    let window_state = window_state.clone();
 
     controller.connect_event(move |_, event| {
-        if let Some(events) = touch_events(event, &window_state, &mut touch_state.borrow_mut()) {
+        let Some(window) = window.upgrade() else {
+            return gtk4::glib::Propagation::Proceed;
+        };
+
+        if let Some(events) = touch_events(event, &window, &mut touch_state.borrow_mut()) {
             let mut shared = shared.borrow_mut();
             for event in events {
-                shared.events_sink.push_window_event(event, window_id);
+                shared.events_sink.push_window_event(event, window.id());
             }
         }
 
@@ -74,21 +75,21 @@ impl TouchState {
 
 fn touch_events(
     event: &gtk4::gdk::Event,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: &UnownedWindow,
     touch_state: &mut TouchState,
 ) -> Option<Vec<WindowEvent>> {
     match event.event_type() {
         gtk4::gdk::EventType::TouchBegin => {
-            touch_begin(event, window_state, touch_state).map(|events| events.to_vec())
+            touch_begin(event, window, touch_state).map(|events| events.to_vec())
         },
         gtk4::gdk::EventType::TouchUpdate => {
-            touch_update(event, window_state, touch_state).map(|event| vec![event])
+            touch_update(event, window, touch_state).map(|event| vec![event])
         },
         gtk4::gdk::EventType::TouchEnd => {
-            touch_end(event, window_state, touch_state).map(|events| events.to_vec())
+            touch_end(event, window, touch_state).map(|events| events.to_vec())
         },
         gtk4::gdk::EventType::TouchCancel => {
-            touch_cancel(event, window_state, touch_state).map(|event| vec![event])
+            touch_cancel(event, window, touch_state).map(|event| vec![event])
         },
         _ => None,
     }
@@ -96,7 +97,7 @@ fn touch_events(
 
 fn touch_begin(
     event: &gtk4::gdk::Event,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: &UnownedWindow,
     touch_state: &mut TouchState,
 ) -> Option<[WindowEvent; 2]> {
     let sequence = event.event_sequence();
@@ -115,7 +116,7 @@ fn touch_begin(
 
     let finger_id = touch_state.next_finger_id();
     let position = {
-        let scale_factor = window_state.lock().unwrap().scale_factor;
+        let scale_factor = window.state.lock().unwrap().scale_factor;
         LogicalPosition::new(x, y).to_physical(scale_factor)
     };
     touch_state.active.insert(sequence.clone(), TouchPoint { finger_id, position });
@@ -143,14 +144,14 @@ fn touch_begin(
 
 fn touch_update(
     event: &gtk4::gdk::Event,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: &UnownedWindow,
     touch_state: &mut TouchState,
 ) -> Option<WindowEvent> {
     let sequence = event.event_sequence();
     let primary = touch_state.is_first_touch(&sequence);
     let (x, y) = event.position()?;
     let position = {
-        let scale_factor = window_state.lock().unwrap().scale_factor;
+        let scale_factor = window.state.lock().unwrap().scale_factor;
         LogicalPosition::new(x, y).to_physical(scale_factor)
     };
     let touch_point = touch_state.active.get_mut(&sequence)?;
@@ -169,7 +170,7 @@ fn touch_update(
 
 fn touch_end(
     event: &gtk4::gdk::Event,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: &UnownedWindow,
     touch_state: &mut TouchState,
 ) -> Option<[WindowEvent; 2]> {
     let sequence = event.event_sequence();
@@ -177,7 +178,7 @@ fn touch_end(
     let mut touch_point = touch_state.active.remove(&sequence)?;
 
     if let Some((x, y)) = event.position() {
-        let scale_factor = window_state.lock().unwrap().scale_factor;
+        let scale_factor = window.state.lock().unwrap().scale_factor;
         let position = LogicalPosition::new(x, y).to_physical(scale_factor);
         touch_point.position = position;
     }
@@ -205,7 +206,7 @@ fn touch_end(
 
 fn touch_cancel(
     event: &gtk4::gdk::Event,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: &UnownedWindow,
     touch_state: &mut TouchState,
 ) -> Option<WindowEvent> {
     let sequence = event.event_sequence();
@@ -213,7 +214,7 @@ fn touch_cancel(
     let mut touch_point = touch_state.active.remove(&sequence)?;
 
     if let Some((x, y)) = event.position() {
-        let scale_factor = window_state.lock().unwrap().scale_factor;
+        let scale_factor = window.state.lock().unwrap().scale_factor;
         let position = LogicalPosition::new(x, y).to_physical(scale_factor);
         touch_point.position = position;
     }

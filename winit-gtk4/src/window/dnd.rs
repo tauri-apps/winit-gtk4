@@ -1,23 +1,21 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Weak;
 
 use dpi::{LogicalPosition, PhysicalPosition};
 use gtk4::gdk::{DragAction, FileList};
 use gtk4::glib::prelude::StaticType;
 use gtk4::prelude::*;
 use winit_core::event::WindowEvent;
-use winit_core::window::WindowId;
 
-use super::WindowState;
+use super::UnownedWindow;
 use crate::event_loop::ActiveEventLoop;
 
 pub(crate) fn connect(
     event_loop: &ActiveEventLoop,
     gtk_window: &gtk4::ApplicationWindow,
-    window_id: WindowId,
-    window_state: &Arc<Mutex<WindowState>>,
+    window: Weak<UnownedWindow>,
 ) {
     let target = gtk4::DropTarget::new(FileList::static_type(), DragAction::COPY);
     target.set_preload(true);
@@ -27,12 +25,17 @@ pub(crate) fn connect(
     {
         let shared = event_loop.shared.clone();
         let drag_state = drag_state.clone();
-        let window_state = window_state.clone();
+        let window = window.clone();
         target.connect_enter(move |target, x, y| {
+            let Some(window) = window.upgrade() else {
+                return DragAction::COPY;
+            };
+
             let position = {
-                let scale_factor = window_state.lock().unwrap().scale_factor;
+                let scale_factor = window.state.lock().unwrap().scale_factor;
                 LogicalPosition::new(x, y).to_physical(scale_factor)
             };
+            let window_id = window.id();
 
             // The file list is loaded asynchronously. Use this serial so a stale
             // callback from an older drag can't enter the drag state and send a DragEntered event.
@@ -58,9 +61,11 @@ pub(crate) fn connect(
 
                         let mut drag_state = drag_state.borrow_mut();
                         if drag_state.enter(serial) {
-                            // Get the updated position in case the drag has moved since connect_enter was called,
-                            // falling back to the position from connect_enter if position() returns None
-                            // which shouldn't happen but is a safeguard against unwrapping a None value.
+                            // Get the updated position in case the drag has moved since
+                            // connect_enter was called, falling back to
+                            // the position from connect_enter if position() returns None
+                            // which shouldn't happen but is a safeguard against unwrapping a None
+                            // value.
                             let position = drag_state.position().unwrap_or(position);
 
                             let event = WindowEvent::DragEntered { paths, position };
@@ -77,10 +82,14 @@ pub(crate) fn connect(
     {
         let shared = event_loop.shared.clone();
         let drag_state = drag_state.clone();
-        let window_state = window_state.clone();
+        let window = window.clone();
         target.connect_motion(move |_, x, y| {
+            let Some(window) = window.upgrade() else {
+                return DragAction::COPY;
+            };
+
             let position = {
-                let scale_factor = window_state.lock().unwrap().scale_factor;
+                let scale_factor = window.state.lock().unwrap().scale_factor;
                 LogicalPosition::new(x, y).to_physical(scale_factor)
             };
 
@@ -90,7 +99,7 @@ pub(crate) fn connect(
 
             if drag_state.has_entered() {
                 let event = WindowEvent::DragMoved { position };
-                shared.borrow_mut().events_sink.push_window_event(event, window_id);
+                shared.borrow_mut().events_sink.push_window_event(event, window.id());
             }
 
             DragAction::COPY
@@ -100,7 +109,12 @@ pub(crate) fn connect(
     {
         let shared = event_loop.shared.clone();
         let drag_state = drag_state.clone();
+        let window = window.clone();
         target.connect_leave(move |_| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             let mut drag_state = drag_state.borrow_mut();
 
             let position = drag_state.position();
@@ -110,7 +124,7 @@ pub(crate) fn connect(
 
             if has_entered {
                 let event = WindowEvent::DragLeft { position };
-                shared.borrow_mut().events_sink.push_window_event(event, window_id);
+                shared.borrow_mut().events_sink.push_window_event(event, window.id());
             }
         });
     }
@@ -118,15 +132,18 @@ pub(crate) fn connect(
     {
         let shared = event_loop.shared.clone();
         let drag_state = drag_state.clone();
-        let window_state = window_state.clone();
         target.connect_drop(move |_, value, x, y| {
+            let Some(window) = window.upgrade() else {
+                return false;
+            };
+
             let Some(paths) = paths_from_value(value) else {
                 drag_state.borrow_mut().reset();
                 return false;
             };
 
             let position = {
-                let scale_factor = window_state.lock().unwrap().scale_factor;
+                let scale_factor = window.state.lock().unwrap().scale_factor;
                 LogicalPosition::new(x, y).to_physical(scale_factor)
             };
 
@@ -136,14 +153,15 @@ pub(crate) fn connect(
 
             let mut shared = shared.borrow_mut();
 
-            // If the drag has not entered, we need to send a DragEntered event before sending DragDropped.
+            // If the drag has not entered, we need to send a DragEntered event before sending
+            // DragDropped.
             if !has_entered {
                 let entered_event = WindowEvent::DragEntered { paths: paths.clone(), position };
-                shared.events_sink.push_window_event(entered_event, window_id);
+                shared.events_sink.push_window_event(entered_event, window.id());
             }
 
             let drop_event = WindowEvent::DragDropped { paths, position };
-            shared.events_sink.push_window_event(drop_event, window_id);
+            shared.events_sink.push_window_event(drop_event, window.id());
 
             true
         });

@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Weak;
 
 use dpi::LogicalPosition;
 use gtk4::gdk::InputSource;
@@ -10,73 +10,81 @@ use winit_core::event::{
     ButtonSource, DeviceId, ElementState, Force, MouseButton, MouseScrollDelta, PointerKind,
     PointerSource, TabletToolData, TabletToolKind, TabletToolTilt, TouchPhase, WindowEvent,
 };
-use winit_core::window::WindowId;
 
-use super::WindowState;
+use super::UnownedWindow;
 use crate::event_loop::ActiveEventLoop;
 
 pub(crate) fn connect(
     event_loop: &ActiveEventLoop,
     gtk_window: &gtk4::ApplicationWindow,
-    window_id: WindowId,
-    state: &Arc<Mutex<WindowState>>,
+    window: Weak<UnownedWindow>,
 ) {
-    connect_motion(event_loop, gtk_window, window_id, state);
-    connect_buttons(event_loop, gtk_window, window_id, state);
-    connect_scroll(event_loop, gtk_window, window_id);
+    connect_motion(event_loop, gtk_window, window.clone());
+    connect_buttons(event_loop, gtk_window, window.clone());
+    connect_scroll(event_loop, gtk_window, window);
 }
 
 fn connect_motion(
     event_loop: &ActiveEventLoop,
     gtk_window: &gtk4::ApplicationWindow,
-    window_id: WindowId,
-    state: &Arc<Mutex<WindowState>>,
+    window: Weak<UnownedWindow>,
 ) {
     let controller = gtk4::EventControllerMotion::new();
     {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
+        let window = window.clone();
         controller.connect_enter(move |controller, x, y| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             let pointer = PointerMetadata::from_controller(controller);
             let event = WindowEvent::PointerEntered {
                 device_id: pointer.device_id,
                 position: {
-                    let scale_factor = state.lock().unwrap().scale_factor;
+                    let scale_factor = window.state.lock().unwrap().scale_factor;
                     LogicalPosition::new(x, y).to_physical(scale_factor)
                 },
                 primary: pointer.primary,
                 kind: pointer.kind,
             };
-            shared.borrow_mut().events_sink.push_window_event(event, window_id);
+            shared.borrow_mut().events_sink.push_window_event(event, window.id());
         });
     }
 
     {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
+        let window = window.clone();
         controller.connect_motion(move |controller, x, y| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             let pointer = PointerMetadata::from_controller(controller);
             let event = WindowEvent::PointerMoved {
                 device_id: pointer.device_id,
                 position: {
-                    let scale_factor = state.lock().unwrap().scale_factor;
+                    let scale_factor = window.state.lock().unwrap().scale_factor;
                     LogicalPosition::new(x, y).to_physical(scale_factor)
                 },
                 primary: pointer.primary,
                 source: pointer.source,
             };
-            shared.borrow_mut().events_sink.push_window_event(event, window_id);
+            shared.borrow_mut().events_sink.push_window_event(event, window.id());
         });
     }
 
     {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
         controller.connect_leave(move |controller| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             let pointer = PointerMetadata::from_controller(controller);
             let position = controller.current_event().and_then(|event| {
                 let (x, y) = event.position()?;
-                let scale_factor = state.lock().unwrap().scale_factor;
+                let scale_factor = window.state.lock().unwrap().scale_factor;
                 Some(LogicalPosition::new(x, y).to_physical(scale_factor))
             });
 
@@ -86,7 +94,7 @@ fn connect_motion(
                 primary: pointer.primary,
                 kind: pointer.kind,
             };
-            shared.borrow_mut().events_sink.push_window_event(event, window_id);
+            shared.borrow_mut().events_sink.push_window_event(event, window.id());
         });
     }
 
@@ -96,17 +104,19 @@ fn connect_motion(
 fn connect_buttons(
     event_loop: &ActiveEventLoop,
     gtk_window: &gtk4::ApplicationWindow,
-    window_id: WindowId,
-    state: &Arc<Mutex<WindowState>>,
+    window: Weak<UnownedWindow>,
 ) {
     let controller = gtk4::EventControllerLegacy::new();
     controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
 
     let shared = event_loop.shared.clone();
-    let state = state.clone();
     controller.connect_event(move |_, event| {
-        if let Some(event) = pointer_button_event(event, &state) {
-            shared.borrow_mut().events_sink.push_window_event(event, window_id);
+        let Some(window) = window.upgrade() else {
+            return gtk4::glib::Propagation::Proceed;
+        };
+
+        if let Some(event) = pointer_button_event(event, &window) {
+            shared.borrow_mut().events_sink.push_window_event(event, window.id());
         }
 
         gtk4::glib::Propagation::Proceed
@@ -118,7 +128,7 @@ fn connect_buttons(
 fn connect_scroll(
     event_loop: &ActiveEventLoop,
     gtk_window: &gtk4::ApplicationWindow,
-    window_id: WindowId,
+    window: Weak<UnownedWindow>,
 ) {
     let controller = gtk4::EventControllerScroll::new(
         gtk4::EventControllerScrollFlags::BOTH_AXES | gtk4::EventControllerScrollFlags::DISCRETE,
@@ -135,17 +145,23 @@ fn connect_scroll(
         controller.connect_scroll_begin(move |_| {
             continuous_scroll.set(true);
             emitted_continuous_scroll.set(false);
-            // connect_scroll_begin doesn't have x/y coordinates, so we can't emit a TouchPhase::Started event here. Instead, we emit it on the first scroll event.
+            // connect_scroll_begin doesn't have x/y coordinates, so we can't emit a
+            // TouchPhase::Started event here. Instead, we emit it on the first scroll event.
             next_phase.set(TouchPhase::Started);
         });
     }
 
     {
         let shared = event_loop.shared.clone();
+        let window = window.clone();
         let continuous_scroll = continuous_scroll.clone();
         let emitted_continuous_scroll = emitted_continuous_scroll.clone();
         let next_phase = next_phase.clone();
         controller.connect_scroll(move |controller, dx, dy| {
+            let Some(window) = window.upgrade() else {
+                return gtk4::glib::Propagation::Proceed;
+            };
+
             let phase = if continuous_scroll.get() {
                 emitted_continuous_scroll.set(true);
                 let phase = next_phase.get();
@@ -160,7 +176,7 @@ fn connect_scroll(
                 delta: MouseScrollDelta::LineDelta(dx as f32, dy as f32),
                 phase,
             };
-            shared.borrow_mut().events_sink.push_window_event(event, window_id);
+            shared.borrow_mut().events_sink.push_window_event(event, window.id());
 
             gtk4::glib::Propagation::Proceed
         });
@@ -168,10 +184,15 @@ fn connect_scroll(
 
     {
         let shared = event_loop.shared.clone();
+        let window = window.clone();
         let continuous_scroll = continuous_scroll.clone();
         let emitted_continuous_scroll = emitted_continuous_scroll.clone();
         let next_phase = next_phase.clone();
         controller.connect_scroll_end(move |controller| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             if continuous_scroll.replace(false) && emitted_continuous_scroll.replace(false) {
                 let event = WindowEvent::MouseWheel {
                     device_id: controller
@@ -180,7 +201,7 @@ fn connect_scroll(
                     delta: MouseScrollDelta::LineDelta(0.0, 0.0),
                     phase: TouchPhase::Ended,
                 };
-                shared.borrow_mut().events_sink.push_window_event(event, window_id);
+                shared.borrow_mut().events_sink.push_window_event(event, window.id());
             }
 
             next_phase.set(TouchPhase::Moved);
@@ -216,8 +237,8 @@ impl PointerMetadata {
                 Self::tablet_tool(&device, device_id, event.as_ref())
             },
 
-            // Touch needs its own controller path to emit the full entered/button/moved/left lifecycle
-            // with stable finger IDs.
+            // Touch needs its own controller path to emit the full entered/button/moved/left
+            // lifecycle with stable finger IDs.
             //
             // Non exhaustive, or unknown input sources, default to `PointerSource::Unknown`
             _ => PointerMetadata::unknown(device_id),
@@ -265,10 +286,7 @@ impl PointerMetadata {
     }
 }
 
-fn pointer_button_event(
-    event: &gtk4::gdk::Event,
-    window_state: &Arc<Mutex<WindowState>>,
-) -> Option<WindowEvent> {
+fn pointer_button_event(event: &gtk4::gdk::Event, window: &UnownedWindow) -> Option<WindowEvent> {
     let button_event = event.downcast_ref::<gtk4::gdk::ButtonEvent>()?;
     let state = match event.event_type() {
         gtk4::gdk::EventType::ButtonPress => ElementState::Pressed,
@@ -284,7 +302,7 @@ fn pointer_button_event(
 
     let (x, y) = event.position()?;
     let position = {
-        let scale_factor = window_state.lock().unwrap().scale_factor;
+        let scale_factor = window.state.lock().unwrap().scale_factor;
         LogicalPosition::new(x, y).to_physical(scale_factor)
     };
 
