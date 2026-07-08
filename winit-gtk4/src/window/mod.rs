@@ -145,6 +145,7 @@ impl UnownedWindow {
 
         let title = attributes.title;
         let visible = attributes.visible;
+        let resizable = attributes.resizable;
         let window_level = attributes.window_level;
         let window_icon = attributes.window_icon;
 
@@ -164,6 +165,7 @@ impl UnownedWindow {
             last_position: None,
             scale_factor,
             visible,
+            resizable,
             has_focus: false,
             modifiers: ModifiersState::default(),
             held_key_press: None,
@@ -652,12 +654,13 @@ impl CoreWindow for Window {
         Some(self.state.lock().unwrap().visible)
     }
 
-    fn set_resizable(&self, _resizable: bool) {
-        todo!("GTK4 set_resizable is not implemented yet")
+    fn set_resizable(&self, resizable: bool) {
+        self.state.lock().unwrap().resizable = resizable;
+        self.queue_command(WindowCommand::SetResizable(resizable));
     }
 
     fn is_resizable(&self) -> bool {
-        todo!("GTK4 is_resizable is not implemented yet")
+        self.state.lock().unwrap().resizable
     }
 
     fn set_enabled_buttons(&self, _buttons: WindowButtons) {
@@ -837,6 +840,7 @@ pub(crate) enum WindowCommand {
     SetTitle(String),
     SetTransparent(bool),
     SetVisible(bool),
+    SetResizable(bool),
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
 }
@@ -863,6 +867,7 @@ impl WindowCommand {
             WindowCommand::SetTitle(title) => window.gtk_window.set_title(Some(&title)),
             WindowCommand::SetTransparent(transparent) => window.set_transparent(transparent),
             WindowCommand::SetVisible(visible) => window.gtk_window.set_visible(visible),
+            WindowCommand::SetResizable(resizable) => window.gtk_window.set_resizable(resizable),
             WindowCommand::SetWindowLevel(level) => {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
                     xwindow.set_window_level(level);
