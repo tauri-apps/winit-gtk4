@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::fmt;
+use std::ops::Deref;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
 use gtk4::gdk::prelude::{DeviceExt, DisplayExt, SeatExt, SurfaceExt};
@@ -29,29 +30,54 @@ mod touches;
 
 pub(crate) use state::WindowState;
 
-pub struct Window {
-    window_id: WindowId,
-    commands: Arc<Mutex<CommandSink>>,
-    context: gtk4::glib::MainContext,
-    display_handle: OwnedDisplayHandle,
-    window_handle: Option<rwh_06::RawWindowHandle>,
-    state: Arc<Mutex<WindowState>>,
-}
+#[derive(Debug)]
+pub struct Window(Arc<UnownedWindow>);
 
-impl fmt::Debug for Window {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Window").field("window_id", &self.window_id).finish()
+impl Deref for Window {
+    type Target = UnownedWindow;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-unsafe impl Send for Window {}
-unsafe impl Sync for Window {}
+pub struct UnownedWindow {
+    window_id: WindowId,
+
+    pub(crate) gtk_window: gtk4::ApplicationWindow,
+    xwindow: Mutex<Option<crate::x11::XWindow>>,
+
+    display_handle: OwnedDisplayHandle,
+    window_handle: Option<rwh_06::RawWindowHandle>,
+
+    context: gtk4::glib::MainContext,
+    commands: Arc<Mutex<CommandSink>>,
+    state: Arc<Mutex<WindowState>>,
+}
+
+impl fmt::Debug for UnownedWindow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnownedWindow").field("window_id", &self.window_id).finish()
+    }
+}
+
+unsafe impl Send for UnownedWindow {}
+unsafe impl Sync for UnownedWindow {}
 
 impl Window {
     pub(crate) fn new(
         event_loop: &ActiveEventLoop,
         attributes: WindowAttributes,
     ) -> Result<Self, RequestError> {
+        Ok(Self(UnownedWindow::new(event_loop, attributes)?))
+    }
+}
+
+impl UnownedWindow {
+    fn new(
+        event_loop: &ActiveEventLoop,
+        attributes: WindowAttributes,
+    ) -> Result<Arc<Self>, RequestError> {
         // Clone the app out of `SharedState` before `present()`, which can
         // synchronously realize the widget and re-enter callbacks that mutate it.
         let app = event_loop.shared.borrow().app.clone();
@@ -127,62 +153,78 @@ impl Window {
         let state = Arc::new(Mutex::new(state));
 
         let commands = event_loop.shared.borrow().commands.clone();
-        Self::connect_events(event_loop, &gtk_window, window_id, &state, position);
+        let window_handle = raw_window_handle(&gtk_window);
+
+        let window = Arc::new(Self {
+            window_id,
+            context: event_loop.context.clone(),
+            commands,
+            gtk_window,
+            display_handle: event_loop.display_handle,
+            window_handle,
+            xwindow: Mutex::new(None),
+            state,
+        });
+
+        event_loop.shared.borrow_mut().windows.insert(window.id(), Arc::downgrade(&window));
+
+        Self::connect_events(
+            event_loop,
+            &window.gtk_window,
+            window.id(),
+            Arc::downgrade(&window),
+            position,
+        );
 
         if position.is_some() {
             // Realize before `present()` so that we can set initial position before
             // presenting the window to user.
-            WidgetExt::realize(&gtk_window);
+            WidgetExt::realize(&window.gtk_window);
         }
 
         if visible {
-            gtk_window.present();
+            window.gtk_window.present();
         }
 
-        let window_handle = raw_window_handle(&gtk_window);
+        Ok(window)
+    }
 
-        {
-            let mut shared = event_loop.shared.borrow_mut();
-            shared.windows.insert(window_id, gtk_window.clone());
-        }
-
-        Ok(Self {
-            window_id,
-            context: event_loop.context.clone(),
-            commands,
-            display_handle: event_loop.display_handle,
-            window_handle,
-            state,
-        })
+    pub(crate) fn id(&self) -> WindowId {
+        self.window_id
     }
 
     fn connect_events(
         event_loop: &ActiveEventLoop,
         gtk_window: &gtk4::ApplicationWindow,
         window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
+        window: Weak<UnownedWindow>,
         position: Option<PhysicalPosition<i32>>,
     ) {
-        Self::connect_close_request(event_loop, gtk_window, window_id);
+        Self::connect_close_request(event_loop, gtk_window, window.clone());
         Self::connect_destroy(event_loop, gtk_window, window_id);
-        Self::connect_focus(event_loop, gtk_window, window_id, state);
-        Self::connect_surface_events(event_loop, gtk_window, window_id, state, position);
-        Self::connect_theme(event_loop, gtk_window, window_id, state);
-        dnd::connect(event_loop, gtk_window, window_id, state);
-        keyboards::connect(event_loop, gtk_window, window_id, state);
-        pointers::connect(event_loop, gtk_window, window_id, state);
-        touches::connect(event_loop, gtk_window, window_id, state);
+        Self::connect_focus(event_loop, gtk_window, window.clone());
+        Self::connect_surface_events(event_loop, gtk_window, window.clone(), position);
+        Self::connect_theme(event_loop, gtk_window, window.clone());
+        dnd::connect(event_loop, gtk_window, window.clone());
+        keyboards::connect(event_loop, gtk_window, window.clone());
+        pointers::connect(event_loop, gtk_window, window.clone());
+        touches::connect(event_loop, gtk_window, window);
     }
 
     fn connect_close_request(
         event_loop: &ActiveEventLoop,
         gtk_window: &gtk4::ApplicationWindow,
-        window_id: WindowId,
+        window: Weak<UnownedWindow>,
     ) {
         let shared = event_loop.shared.clone();
         gtk_window.connect_close_request(move |_| {
+            let Some(window) = window.upgrade() else {
+                return gtk4::glib::Propagation::Stop;
+            };
+
             let mut shared = shared.borrow_mut();
-            shared.events_sink.push_window_event(WindowEvent::CloseRequested, window_id);
+            shared.events_sink.push_window_event(WindowEvent::CloseRequested, window.id());
+
             gtk4::glib::Propagation::Stop
         });
     }
@@ -203,16 +245,14 @@ impl Window {
     fn connect_focus(
         event_loop: &ActiveEventLoop,
         gtk_window: &gtk4::ApplicationWindow,
-        window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
+        window: Weak<UnownedWindow>,
     ) {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
 
-        gtk_window.connect_is_active_notify(move |window| {
-            let focused = window.is_active();
+        gtk_window.connect_is_active_notify(move |gtk_window| {
+            let focused = gtk_window.is_active();
             let modifiers = if focused {
-                let modifiers = WidgetExt::display(window)
+                let modifiers = WidgetExt::display(gtk_window)
                     .default_seat()
                     .and_then(|seat| seat.keyboard())
                     .map(|keyboard| keyboard.modifier_state())
@@ -223,8 +263,13 @@ impl Window {
                 ModifiersState::empty()
             };
 
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let window_id = window.id();
+
             {
-                let mut state = state.lock().unwrap();
+                let mut state = window.state.lock().unwrap();
                 if state.has_focus == focused {
                     return;
                 }
@@ -255,24 +300,29 @@ impl Window {
     fn connect_surface_events(
         event_loop: &ActiveEventLoop,
         gtk_window: &gtk4::ApplicationWindow,
-        window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
+        window: Weak<UnownedWindow>,
         position: Option<PhysicalPosition<i32>>,
     ) {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
 
-        gtk_window.connect_realize(move |window| {
-            let Some(surface) = window.surface() else {
+        gtk_window.connect_realize(move |gtk_window| {
+            let Some(surface) = gtk_window.surface() else {
                 return;
             };
 
-            Self::connect_scale_factor(&shared, &surface, window_id, &state);
-            Self::connect_surface_layout(&shared, &surface, window_id, &state);
-            Self::connect_moved(&shared, &surface, window_id, &state);
+            Self::connect_scale_factor(&shared, &surface, window.clone());
+            Self::connect_surface_layout(&shared, &surface, window.clone());
+            Self::connect_moved(&shared, &surface, window.clone());
+
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
+            // Store the X11 window handle for later use.
+            let xwindow = crate::x11::XWindow::from_surface(&surface);
+            *window.xwindow.lock().unwrap() = xwindow;
 
             if let Some(position) = position {
-                let xwindow = crate::x11::XWindow::from_surface(&surface);
                 if let Some(xwindow) = xwindow {
                     xwindow.set_position(position);
                 }
@@ -283,12 +333,15 @@ impl Window {
     fn connect_scale_factor(
         shared: &Rc<RefCell<SharedState>>,
         surface: &gtk4::gdk::Surface,
-        window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
+        window: Weak<UnownedWindow>,
     ) {
+        let Some(winit_window) = window.upgrade() else {
+            return;
+        };
+
         let scale_factor = surface.scale();
         let surface_size = {
-            let mut state = state.lock().unwrap();
+            let mut state = winit_window.state.lock().unwrap();
             let logical_size = state.surface_size;
 
             // Window creation only has a guessed monitor scale. Once the GDK surface exists,
@@ -301,15 +354,22 @@ impl Window {
         // Push inital scale factor event
         {
             let mut shared = shared.borrow_mut();
-            shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window_id);
+            shared.events_sink.push_scale_factor_changed(
+                scale_factor,
+                surface_size,
+                winit_window.id(),
+            );
         }
 
         let shared = shared.clone();
-        let state = state.clone();
         surface.connect_scale_notify(move |surface| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             let scale_factor = surface.scale();
             let surface_size = {
-                let mut state = state.lock().unwrap();
+                let mut state = window.state.lock().unwrap();
                 if state.scale_factor == scale_factor {
                     return;
                 }
@@ -320,25 +380,27 @@ impl Window {
             };
 
             let mut shared = shared.borrow_mut();
-            shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window_id);
+            shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window.id());
         });
     }
 
     fn connect_surface_layout(
         shared: &Rc<RefCell<SharedState>>,
         surface: &gtk4::gdk::Surface,
-        window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
+        window: Weak<UnownedWindow>,
     ) {
         let shared = shared.clone();
-        let state = state.clone();
         surface.connect_layout(move |_, width, height| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             let width = width.max(0) as u32;
             let height = height.max(0) as u32;
             let logical_size = LogicalSize::new(width, height);
 
             let surface_size = {
-                let mut state = state.lock().unwrap();
+                let mut state = window.state.lock().unwrap();
                 let surface_size = logical_size.to_physical(state.scale_factor);
                 let resized = state
                     .last_layout
@@ -357,7 +419,7 @@ impl Window {
             if let Some(surface_size) = surface_size {
                 let event = WindowEvent::SurfaceResized(surface_size);
                 let mut shared = shared.borrow_mut();
-                shared.events_sink.push_window_event(event, window_id);
+                shared.events_sink.push_window_event(event, window.id());
             }
         });
     }
@@ -365,8 +427,7 @@ impl Window {
     fn connect_moved(
         shared: &Rc<RefCell<SharedState>>,
         surface: &gtk4::gdk::Surface,
-        window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
+        window: Weak<UnownedWindow>,
     ) {
         let Ok(surface) = surface.clone().downcast::<gdk4_x11::X11Surface>() else {
             return;
@@ -377,10 +438,13 @@ impl Window {
 
         let xwindow = surface.xid();
         let shared = shared.clone();
-        let state = state.clone();
 
         unsafe {
             display.connect_xevent(move |_, xevent| {
+                let Some(window) = window.upgrade() else {
+                    return gtk4::glib::Propagation::Proceed;
+                };
+
                 let xevent = &*xevent;
                 if xevent.get_type() != gdk4_x11::x11::xlib::ConfigureNotify {
                     return gtk4::glib::Propagation::Proceed;
@@ -393,7 +457,7 @@ impl Window {
 
                 let position = PhysicalPosition::new(configure.x, configure.y);
                 let moved = {
-                    let mut state = state.lock().unwrap();
+                    let mut state = window.state.lock().unwrap();
                     let moved = state.last_position.is_some_and(|last| last != position);
                     state.last_position = Some(position);
                     moved
@@ -402,7 +466,7 @@ impl Window {
                 if moved {
                     let mut shared = shared.borrow_mut();
                     let events_sink = &mut shared.events_sink;
-                    events_sink.push_window_event(WindowEvent::Moved(position), window_id);
+                    events_sink.push_window_event(WindowEvent::Moved(position), window.id());
                 }
 
                 gtk4::glib::Propagation::Proceed
@@ -413,17 +477,19 @@ impl Window {
     fn connect_theme(
         event_loop: &ActiveEventLoop,
         gtk_window: &gtk4::ApplicationWindow,
-        window_id: WindowId,
-        state: &Arc<Mutex<WindowState>>,
+        window: Weak<UnownedWindow>,
     ) {
         let shared = event_loop.shared.clone();
-        let state = state.clone();
         let settings = WidgetExt::settings(gtk_window);
 
         settings.connect_gtk_application_prefer_dark_theme_notify(move |settings| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
             let theme = theme_from_settings(settings);
             let changed = {
-                let mut state = state.lock().unwrap();
+                let mut state = window.state.lock().unwrap();
                 let changed = state.theme != Some(theme);
                 state.theme = Some(theme);
                 changed
@@ -431,11 +497,13 @@ impl Window {
 
             if changed {
                 let mut shared = shared.borrow_mut();
-                shared.events_sink.push_window_event(WindowEvent::ThemeChanged(theme), window_id);
+                shared.events_sink.push_window_event(WindowEvent::ThemeChanged(theme), window.id());
             }
         });
     }
+}
 
+impl Window {
     fn queue_command(&self, command: WindowCommand) {
         self.commands.lock().unwrap().push_window_command(self.window_id, command);
         self.context.wakeup();
@@ -444,7 +512,7 @@ impl Window {
 
 impl Drop for Window {
     fn drop(&mut self) {
-        self.commands.lock().unwrap().push_window_command(self.window_id, WindowCommand::Close);
+        self.commands.lock().unwrap().push_close_window(self.gtk_window.clone());
         self.context.wakeup();
     }
 }
@@ -691,7 +759,6 @@ impl CoreWindow for Window {
 
 #[derive(Debug)]
 pub(crate) enum WindowCommand {
-    Close,
     RequestRedraw,
     SetSurfaceSize { size: Size, scale_factor: f64 },
     SetOuterPosition { position: Position, scale_factor: f64 },
@@ -701,29 +768,26 @@ pub(crate) enum WindowCommand {
 }
 
 impl WindowCommand {
-    pub(crate) fn apply_to(self, window: &gtk4::ApplicationWindow) {
+    pub(crate) fn apply_to(self, window: &UnownedWindow) {
         match self {
-            WindowCommand::Close => window.close(),
             WindowCommand::RequestRedraw => { /* Handled in event_loop.rs */ },
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
                 let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
-                window.set_default_size(width, height);
+                window.gtk_window.set_default_size(width, height);
             },
             WindowCommand::SetOuterPosition { position, scale_factor } => {
-                let surface = window.surface();
-                let xwindow = surface.and_then(|s| crate::x11::XWindow::from_surface(&s));
-                if let Some(xwindow) = xwindow {
+                if let Some(xwindow) = *window.xwindow.lock().unwrap() {
                     let position = position.to_physical::<i32>(scale_factor);
                     xwindow.set_position(position);
                 }
             },
             WindowCommand::SetTheme(theme) => {
                 let is_dark = matches!(theme, Some(Theme::Dark));
-                let settings = WidgetExt::settings(window);
+                let settings = WidgetExt::settings(&window.gtk_window);
                 settings.set_gtk_application_prefer_dark_theme(is_dark)
             },
-            WindowCommand::SetTitle(title) => window.set_title(Some(&title)),
-            WindowCommand::SetVisible(visible) => window.set_visible(visible),
+            WindowCommand::SetTitle(title) => window.gtk_window.set_title(Some(&title)),
+            WindowCommand::SetVisible(visible) => window.gtk_window.set_visible(visible),
         }
     }
 }

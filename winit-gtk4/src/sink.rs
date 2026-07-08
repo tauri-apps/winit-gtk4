@@ -15,6 +15,8 @@ pub(crate) struct CommandSink {
 #[derive(Debug)]
 pub(crate) enum Command {
     Window { window_id: WindowId, command: WindowCommand },
+    // Used by `Window::drop`, where the weak window registry may no longer upgrade.
+    CloseWindow(gtk4::ApplicationWindow),
 }
 
 impl CommandSink {
@@ -26,6 +28,11 @@ impl CommandSink {
     #[inline]
     pub(crate) fn push_window_command(&mut self, window_id: WindowId, command: WindowCommand) {
         self.commands.push(Command::Window { window_id, command });
+    }
+
+    #[inline]
+    pub(crate) fn push_close_window(&mut self, window: gtk4::ApplicationWindow) {
+        self.commands.push(Command::CloseWindow(window));
     }
 
     #[inline]

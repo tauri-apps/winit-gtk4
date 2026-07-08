@@ -5,7 +5,7 @@ use std::fmt;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
@@ -24,7 +24,7 @@ use winit_core::monitor::MonitorHandle;
 use winit_core::window::{Theme, Window as CoreWindow, WindowAttributes, WindowId};
 
 use crate::sink::{Command, CommandSink, EventSink};
-use crate::window::{theme_from_settings, Window, WindowCommand};
+use crate::window::{UnownedWindow, Window, WindowCommand, theme_from_settings};
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -37,7 +37,7 @@ pub(crate) struct SharedState {
     pub(crate) app: gtk4::Application,
     pub(crate) commands: Arc<Mutex<CommandSink>>,
     pub(crate) events_sink: EventSink,
-    pub(crate) windows: HashMap<WindowId, gtk4::ApplicationWindow>,
+    pub(crate) windows: HashMap<WindowId, Weak<UnownedWindow>>,
 }
 
 #[derive(Debug)]
@@ -310,22 +310,25 @@ impl EventLoop {
                 Command::Window { window_id, command } => {
                     let window = {
                         let shared = self.active_event_loop.shared.borrow();
-                        shared.windows.get(&window_id).cloned()
+                        shared.windows.get(&window_id).and_then(Weak::upgrade)
                     };
 
-                    if let Some(window) = window {
-                        match command {
-                            WindowCommand::RequestRedraw => {
-                                app.window_event(
-                                    &self.active_event_loop,
-                                    window_id,
-                                    WindowEvent::RedrawRequested,
-                                );
-                            },
-                            command => command.apply_to(&window),
-                        }
+                    let Some(window) = window else {
+                        continue;
+                    };
+
+                    match command {
+                        WindowCommand::RequestRedraw => {
+                            app.window_event(
+                                &self.active_event_loop,
+                                window_id,
+                                WindowEvent::RedrawRequested,
+                            );
+                        },
+                        command => command.apply_to(&window),
                     }
                 },
+                Command::CloseWindow(window) => window.close(),
             }
         }
 
@@ -352,14 +355,16 @@ impl EventLoop {
                     if surface_size != old_surface_size {
                         let window = {
                             let shared = self.active_event_loop.shared.borrow();
-                            shared.windows.get(&window_id).cloned()
+                            shared.windows.get(&window_id).and_then(Weak::upgrade)
                         };
 
-                        if let Some(window) = window {
-                            let logical_size = surface_size.to_logical::<i32>(scale_factor);
-                            let (width, height) = logical_size.into();
-                            window.set_default_size(width, height);
-                        }
+                        let Some(window) = window else {
+                            continue;
+                        };
+
+                        let logical_size = surface_size.to_logical::<i32>(scale_factor);
+                        let (width, height) = logical_size.into();
+                        window.gtk_window.set_default_size(width, height);
                     }
                 },
             }
@@ -443,7 +448,8 @@ impl CoreActiveEventLoop for ActiveEventLoop {
 
     fn listen_device_events(&self, _allowed: DeviceEvents) {
         todo!(
-            "GTK4 device event listening is not implemented yet, might be possible on X11 but not on Wayland"
+            "GTK4 device event listening is not implemented yet, might be possible on X11 but not \
+             on Wayland"
         )
     }
 

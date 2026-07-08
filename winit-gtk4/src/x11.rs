@@ -26,6 +26,7 @@ pub(crate) fn raw_window_handle(surface: &gtk4::gdk::Surface) -> Option<rwh_06::
     Some(rwh_06::XlibWindowHandle::new(window.xid as _).into())
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct XWindow {
     display: *mut xlib::Display,
     xid: xlib::Window,
