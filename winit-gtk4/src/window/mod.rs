@@ -783,15 +783,15 @@ impl CoreWindow for Window {
     }
 
     fn current_monitor(&self) -> Option<MonitorHandle> {
-        todo!("GTK4 current_monitor is not implemented yet")
+        self.gtk_window.surface().and_then(|surface| crate::monitor::current_monitor(&surface))
     }
 
     fn available_monitors(&self) -> Box<dyn Iterator<Item = MonitorHandle>> {
-        todo!("GTK4 available_monitors is not implemented yet")
+        crate::monitor::available_monitors()
     }
 
     fn primary_monitor(&self) -> Option<MonitorHandle> {
-        todo!("GTK4 primary_monitor is not implemented yet")
+        crate::monitor::primary_monitor()
     }
 
     fn rwh_06_display_handle(&self) -> &dyn rwh_06::HasDisplayHandle {

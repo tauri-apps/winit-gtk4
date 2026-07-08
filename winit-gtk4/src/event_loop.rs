@@ -442,11 +442,11 @@ impl CoreActiveEventLoop for ActiveEventLoop {
     }
 
     fn available_monitors(&self) -> Box<dyn Iterator<Item = MonitorHandle>> {
-        todo!("GTK4 monitor enumeration is not implemented yet")
+        crate::monitor::available_monitors()
     }
 
     fn primary_monitor(&self) -> Option<MonitorHandle> {
-        todo!("GTK4 primary monitor detection is not implemented yet")
+        crate::monitor::primary_monitor()
     }
 
     fn listen_device_events(&self, _allowed: DeviceEvents) {
