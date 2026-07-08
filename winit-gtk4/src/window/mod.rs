@@ -30,6 +30,13 @@ mod touches;
 
 pub(crate) use state::WindowState;
 
+const TRANSPARENT_WINDOW_CSS_CLASS: &str = "winit-transparent-window";
+const TRANSPARENT_WINDOW_CSS: &str = r#"
+.winit-transparent-window {
+    background-color: transparent;
+}
+"#;
+
 #[derive(Debug)]
 pub struct Window(Arc<UnownedWindow>);
 
@@ -166,6 +173,8 @@ impl UnownedWindow {
         };
         let state = Arc::new(Mutex::new(state));
 
+        install_transparency_css(&gtk_window);
+
         let commands = event_loop.shared.borrow().commands.clone();
         let window = Arc::new(Self {
             window_id,
@@ -196,6 +205,7 @@ impl UnownedWindow {
         *window.window_handle.lock().unwrap() = window_handle;
 
         window.set_window_icon(window_icon.as_ref().and_then(|icon| icon.cast_ref()));
+        window.set_transparent(attributes.transparent);
 
         if visible {
             window.gtk_window.present();
@@ -206,21 +216,6 @@ impl UnownedWindow {
 
     pub(crate) fn id(&self) -> WindowId {
         self.window_id
-    }
-
-    fn set_window_icon(&self, icon: Option<&RgbaIcon>) {
-        let Some(surface) = self.gtk_window.surface() else {
-            return;
-        };
-        let Ok(toplevel) = surface.downcast::<gtk4::gdk::Toplevel>() else {
-            return;
-        };
-
-        if let Some(texture) = icon.map(gdk_texture_from_icon) {
-            toplevel.set_icon_list(&[texture]);
-        } else {
-            toplevel.set_icon_list(&[]);
-        }
     }
 
     fn connect_events(
@@ -640,8 +635,8 @@ impl CoreWindow for Window {
         self.queue_command(WindowCommand::SetTitle(title));
     }
 
-    fn set_transparent(&self, _transparent: bool) {
-        todo!("GTK4 set_transparent is not implemented yet")
+    fn set_transparent(&self, transparent: bool) {
+        self.queue_command(WindowCommand::SetTransparent(transparent));
     }
 
     fn set_blur(&self, _blur: bool) {
@@ -808,6 +803,31 @@ impl CoreWindow for Window {
     }
 }
 
+impl UnownedWindow {
+    fn set_window_icon(&self, icon: Option<&RgbaIcon>) {
+        let Some(surface) = self.gtk_window.surface() else {
+            return;
+        };
+        let Ok(toplevel) = surface.downcast::<gtk4::gdk::Toplevel>() else {
+            return;
+        };
+
+        if let Some(texture) = icon.map(gdk_texture_from_icon) {
+            toplevel.set_icon_list(&[texture]);
+        } else {
+            toplevel.set_icon_list(&[]);
+        }
+    }
+
+    fn set_transparent(&self, transparent: bool) {
+        if transparent {
+            self.gtk_window.add_css_class(TRANSPARENT_WINDOW_CSS_CLASS);
+        } else {
+            self.gtk_window.remove_css_class(TRANSPARENT_WINDOW_CSS_CLASS);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum WindowCommand {
     RequestRedraw,
@@ -815,6 +835,7 @@ pub(crate) enum WindowCommand {
     SetOuterPosition { position: Position, scale_factor: f64 },
     SetTheme(Option<Theme>),
     SetTitle(String),
+    SetTransparent(bool),
     SetVisible(bool),
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
@@ -840,6 +861,7 @@ impl WindowCommand {
                 settings.set_gtk_application_prefer_dark_theme(is_dark)
             },
             WindowCommand::SetTitle(title) => window.gtk_window.set_title(Some(&title)),
+            WindowCommand::SetTransparent(transparent) => window.set_transparent(transparent),
             WindowCommand::SetVisible(visible) => window.gtk_window.set_visible(visible),
             WindowCommand::SetWindowLevel(level) => {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
@@ -851,6 +873,16 @@ impl WindowCommand {
             },
         }
     }
+}
+
+fn install_transparency_css(window: &gtk4::ApplicationWindow) {
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_string(TRANSPARENT_WINDOW_CSS);
+    gtk4::style_context_add_provider_for_display(
+        &WidgetExt::display(window),
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
 
 fn gdk_cursor_from_icon(cursor_icon: CursorIcon) -> Option<gtk4::gdk::Cursor> {
