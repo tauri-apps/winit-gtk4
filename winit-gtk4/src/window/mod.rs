@@ -48,7 +48,7 @@ pub struct UnownedWindow {
     xwindow: Mutex<Option<crate::x11::XWindow>>,
 
     display_handle: OwnedDisplayHandle,
-    window_handle: Option<rwh_06::RawWindowHandle>,
+    window_handle: Mutex<Option<rwh_06::RawWindowHandle>>,
 
     context: gtk4::glib::MainContext,
     commands: Arc<Mutex<CommandSink>>,
@@ -127,6 +127,7 @@ impl UnownedWindow {
 
         let title = attributes.title;
         let visible = attributes.visible;
+        let window_level = attributes.window_level;
 
         let preferred_theme = attributes.preferred_theme;
         let settings = WidgetExt::settings(&gtk_window);
@@ -149,19 +150,18 @@ impl UnownedWindow {
             held_key_press: None,
             theme,
             title,
+            window_level,
         };
         let state = Arc::new(Mutex::new(state));
 
         let commands = event_loop.shared.borrow().commands.clone();
-        let window_handle = raw_window_handle(&gtk_window);
-
         let window = Arc::new(Self {
             window_id,
             context: event_loop.context.clone(),
             commands,
             gtk_window,
             display_handle: event_loop.display_handle,
-            window_handle,
+            window_handle: Mutex::new(None),
             xwindow: Mutex::new(None),
             state,
         });
@@ -176,11 +176,12 @@ impl UnownedWindow {
             position,
         );
 
-        if position.is_some() {
-            // Realize before `present()` so that we can set initial position before
-            // presenting the window to user.
-            WidgetExt::realize(&window.gtk_window);
-        }
+        // Realize before `present()` so that X11-only initial state, such as
+        // position and window level, can be applied before the window is shown.
+        WidgetExt::realize(&window.gtk_window);
+
+        let window_handle = raw_window_handle(&window.gtk_window);
+        *window.window_handle.lock().unwrap() = window_handle;
 
         if visible {
             window.gtk_window.present();
@@ -303,8 +304,10 @@ impl UnownedWindow {
         window: Weak<UnownedWindow>,
         position: Option<PhysicalPosition<i32>>,
     ) {
-        let shared = event_loop.shared.clone();
+        let window_on_map = window.clone();
 
+        let shared = event_loop.shared.clone();
+        let xconn = event_loop.xconn.clone();
         gtk_window.connect_realize(move |gtk_window| {
             let Some(surface) = gtk_window.surface() else {
                 return;
@@ -319,13 +322,26 @@ impl UnownedWindow {
             };
 
             // Store the X11 window handle for later use.
-            let xwindow = crate::x11::XWindow::from_surface(&surface);
-            *window.xwindow.lock().unwrap() = xwindow;
+            let xconn = xconn.clone();
+            let xwindow = xconn.and_then(|x| crate::x11::XWindow::from_surface(&surface, x));
 
-            if let Some(position) = position {
-                if let Some(xwindow) = xwindow {
+            if let Some(xwindow) = &xwindow {
+                if let Some(position) = position {
                     xwindow.set_position(position);
                 }
+            }
+
+            *window.xwindow.lock().unwrap() = xwindow;
+        });
+
+        gtk_window.connect_map(move |_| {
+            let Some(window) = window_on_map.upgrade() else {
+                return;
+            };
+
+            let window_level = window.state.lock().unwrap().window_level;
+            if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
+                xwindow.set_window_level(window_level);
             }
         });
     }
@@ -655,8 +671,9 @@ impl CoreWindow for Window {
         todo!("GTK4 is_decorated is not implemented yet")
     }
 
-    fn set_window_level(&self, _level: WindowLevel) {
-        todo!("GTK4 set_window_level is not implemented yet")
+    fn set_window_level(&self, level: WindowLevel) {
+        self.state.lock().unwrap().window_level = level;
+        self.queue_command(WindowCommand::SetWindowLevel(level));
     }
 
     fn set_window_icon(&self, _window_icon: Option<Icon>) {
@@ -765,6 +782,7 @@ pub(crate) enum WindowCommand {
     SetTheme(Option<Theme>),
     SetTitle(String),
     SetVisible(bool),
+    SetWindowLevel(WindowLevel),
 }
 
 impl WindowCommand {
@@ -776,7 +794,7 @@ impl WindowCommand {
                 window.gtk_window.set_default_size(width, height);
             },
             WindowCommand::SetOuterPosition { position, scale_factor } => {
-                if let Some(xwindow) = *window.xwindow.lock().unwrap() {
+                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
                     let position = position.to_physical::<i32>(scale_factor);
                     xwindow.set_position(position);
                 }
@@ -788,6 +806,11 @@ impl WindowCommand {
             },
             WindowCommand::SetTitle(title) => window.gtk_window.set_title(Some(&title)),
             WindowCommand::SetVisible(visible) => window.gtk_window.set_visible(visible),
+            WindowCommand::SetWindowLevel(level) => {
+                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
+                    xwindow.set_window_level(level);
+                }
+            },
         }
     }
 }
@@ -823,7 +846,7 @@ pub(crate) fn theme_from_settings(settings: &gtk4::Settings) -> Theme {
 
 impl rwh_06::HasWindowHandle for Window {
     fn window_handle(&self) -> Result<rwh_06::WindowHandle<'_>, rwh_06::HandleError> {
-        let raw = self.window_handle.ok_or(rwh_06::HandleError::Unavailable)?;
+        let raw = self.window_handle.lock().unwrap().ok_or(rwh_06::HandleError::Unavailable)?;
 
         unsafe { Ok(rwh_06::WindowHandle::borrow_raw(raw)) }
     }

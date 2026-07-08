@@ -1,6 +1,6 @@
 use dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit_core::keyboard::{ModifiersState, PhysicalKey};
-use winit_core::window::Theme;
+use winit_core::window::{Theme, WindowLevel};
 
 #[derive(Debug)]
 pub(crate) struct WindowState {
@@ -14,4 +14,5 @@ pub(crate) struct WindowState {
     pub(crate) held_key_press: Option<PhysicalKey>,
     pub(crate) theme: Option<Theme>,
     pub(crate) title: String,
+    pub(crate) window_level: WindowLevel,
 }

@@ -16,6 +16,7 @@ gtk4.workspace = true
 rwh_06.workspace = true
 winit-common = { workspace = true, features = ["xkb"] }
 winit-core.workspace = true
+x11rb.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
