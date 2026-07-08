@@ -37,6 +37,14 @@ pub(crate) fn raw_window_handle(surface: &gtk4::gdk::Surface) -> Option<rwh_06::
     Some(rwh_06::XlibWindowHandle::new(xid as _).into())
 }
 
+pub(crate) fn parent_window(raw: rwh_06::RawWindowHandle) -> Option<xproto::Window> {
+    match raw {
+        rwh_06::RawWindowHandle::Xlib(handle) => Some(handle.window as xproto::Window),
+        rwh_06::RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+        _ => None,
+    }
+}
+
 pub(crate) struct XConnection {
     xconn: RustConnection,
     root: xproto::Window,
@@ -91,6 +99,14 @@ impl XWindow {
 
         let configure = xproto::ConfigureWindowAux::new().x(position.x).y(position.y);
         let _ = self.xconn.xconn.configure_window(self.xid, &configure);
+
+        let _ = self.xconn.xconn.flush();
+    }
+
+    pub fn set_parent(&self, parent: xproto::Window, position: PhysicalPosition<i32>) {
+        let x = position.x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let y = position.y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let _ = self.xconn.xconn.reparent_window(self.xid, parent, x, y);
 
         let _ = self.xconn.xconn.flush();
     }

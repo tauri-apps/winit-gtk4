@@ -55,6 +55,12 @@ pub struct UnownedWindow {
     state: Arc<Mutex<WindowState>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct InitialSurfaceAttributes {
+    position: Option<PhysicalPosition<i32>>,
+    parent_window: Option<rwh_06::RawWindowHandle>,
+}
+
 impl fmt::Debug for UnownedWindow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UnownedWindow").field("window_id", &self.window_id).finish()
@@ -91,6 +97,11 @@ impl UnownedWindow {
 
         let position =
             attributes.position.map(|position| position.to_physical::<i32>(scale_factor));
+
+        let surface_attributes = InitialSurfaceAttributes {
+            position,
+            parent_window: attributes.parent_window().copied(),
+        };
 
         let fullscreen = attributes.fullscreen.is_some();
 
@@ -174,7 +185,7 @@ impl UnownedWindow {
             &window.gtk_window,
             window.id(),
             Arc::downgrade(&window),
-            position,
+            surface_attributes,
         );
 
         // Realize before `present()` so that X11-only initial state, such as
@@ -217,12 +228,12 @@ impl UnownedWindow {
         gtk_window: &gtk4::ApplicationWindow,
         window_id: WindowId,
         window: Weak<UnownedWindow>,
-        position: Option<PhysicalPosition<i32>>,
+        surface_attributes: InitialSurfaceAttributes,
     ) {
         Self::connect_close_request(event_loop, gtk_window, window.clone());
         Self::connect_destroy(event_loop, gtk_window, window_id);
         Self::connect_focus(event_loop, gtk_window, window.clone());
-        Self::connect_surface_events(event_loop, gtk_window, window.clone(), position);
+        Self::connect_surface_events(event_loop, gtk_window, window.clone(), surface_attributes);
         Self::connect_theme(event_loop, gtk_window, window.clone());
         dnd::connect(event_loop, gtk_window, window.clone());
         keyboards::connect(event_loop, gtk_window, window.clone());
@@ -320,7 +331,7 @@ impl UnownedWindow {
         event_loop: &ActiveEventLoop,
         gtk_window: &gtk4::ApplicationWindow,
         window: Weak<UnownedWindow>,
-        position: Option<PhysicalPosition<i32>>,
+        surface_attributes: InitialSurfaceAttributes,
     ) {
         let window_on_map = window.clone();
 
@@ -344,7 +355,12 @@ impl UnownedWindow {
             let xwindow = xconn.and_then(|x| crate::x11::XWindow::from_surface(&surface, x));
 
             if let Some(xwindow) = &xwindow {
-                if let Some(position) = position {
+                let parent = surface_attributes.parent_window.and_then(crate::x11::parent_window);
+                if let Some(parent) = parent {
+                    xwindow.set_parent(parent, surface_attributes.position.unwrap_or_default());
+                }
+
+                if let Some(position) = surface_attributes.position {
                     xwindow.set_position(position);
                 }
             }
