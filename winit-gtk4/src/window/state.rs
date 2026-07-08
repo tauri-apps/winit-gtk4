@@ -9,6 +9,7 @@ pub(crate) struct WindowState {
     pub(crate) last_position: Option<PhysicalPosition<i32>>,
     pub(crate) scale_factor: f64,
     pub(crate) visible: bool,
+    pub(crate) resizable: bool,
     pub(crate) has_focus: bool,
     pub(crate) modifiers: ModifiersState,
     pub(crate) held_key_press: Option<PhysicalKey>,
