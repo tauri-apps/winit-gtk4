@@ -2,7 +2,9 @@
 
 mod event_loop;
 mod sink;
+mod wayland;
 mod window;
+mod x11;
 
 use winit_core::event_loop::ActiveEventLoop as CoreActiveEventLoop;
 
