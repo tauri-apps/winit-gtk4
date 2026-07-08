@@ -10,7 +10,7 @@ use gtk4::prelude::*;
 use winit_core::cursor::{Cursor, CursorIcon};
 use winit_core::error::RequestError;
 use winit_core::event::WindowEvent;
-use winit_core::icon::Icon;
+use winit_core::icon::{Icon, RgbaIcon};
 use winit_core::keyboard::ModifiersState;
 use winit_core::monitor::{Fullscreen, MonitorHandle};
 use winit_core::window::{
@@ -128,6 +128,7 @@ impl UnownedWindow {
         let title = attributes.title;
         let visible = attributes.visible;
         let window_level = attributes.window_level;
+        let window_icon = attributes.window_icon;
 
         let preferred_theme = attributes.preferred_theme;
         let settings = WidgetExt::settings(&gtk_window);
@@ -183,6 +184,8 @@ impl UnownedWindow {
         let window_handle = raw_window_handle(&window.gtk_window);
         *window.window_handle.lock().unwrap() = window_handle;
 
+        window.set_window_icon(window_icon.as_ref().and_then(|icon| icon.cast_ref()));
+
         if visible {
             window.gtk_window.present();
         }
@@ -192,6 +195,21 @@ impl UnownedWindow {
 
     pub(crate) fn id(&self) -> WindowId {
         self.window_id
+    }
+
+    fn set_window_icon(&self, icon: Option<&RgbaIcon>) {
+        let Some(surface) = self.gtk_window.surface() else {
+            return;
+        };
+        let Ok(toplevel) = surface.downcast::<gtk4::gdk::Toplevel>() else {
+            return;
+        };
+
+        if let Some(texture) = icon.map(gdk_texture_from_icon) {
+            toplevel.set_icon_list(&[texture]);
+        } else {
+            toplevel.set_icon_list(&[]);
+        }
     }
 
     fn connect_events(
@@ -676,8 +694,8 @@ impl CoreWindow for Window {
         self.queue_command(WindowCommand::SetWindowLevel(level));
     }
 
-    fn set_window_icon(&self, _window_icon: Option<Icon>) {
-        todo!("GTK4 set_window_icon is not implemented yet")
+    fn set_window_icon(&self, window_icon: Option<Icon>) {
+        self.queue_command(WindowCommand::SetWindowIcon(window_icon));
     }
 
     fn request_ime_update(&self, _request: ImeRequest) -> Result<(), ImeRequestError> {
@@ -783,6 +801,7 @@ pub(crate) enum WindowCommand {
     SetTitle(String),
     SetVisible(bool),
     SetWindowLevel(WindowLevel),
+    SetWindowIcon(Option<Icon>),
 }
 
 impl WindowCommand {
@@ -811,6 +830,9 @@ impl WindowCommand {
                     xwindow.set_window_level(level);
                 }
             },
+            WindowCommand::SetWindowIcon(icon) => {
+                window.set_window_icon(icon.as_ref().and_then(|icon| icon.cast_ref()));
+            },
         }
     }
 }
@@ -819,6 +841,19 @@ fn gdk_cursor_from_icon(cursor_icon: CursorIcon) -> Option<gtk4::gdk::Cursor> {
     gtk4::gdk::Cursor::from_name(cursor_icon.name(), None).or_else(|| {
         cursor_icon.alt_names().iter().find_map(|name| gtk4::gdk::Cursor::from_name(name, None))
     })
+}
+
+fn gdk_texture_from_icon(icon: &RgbaIcon) -> gtk4::gdk::Texture {
+    let bytes = gtk4::glib::Bytes::from_owned(icon.buffer().to_vec());
+    let stride = icon.width() as usize * 4;
+    gtk4::gdk::MemoryTexture::new(
+        icon.width() as i32,
+        icon.height() as i32,
+        gtk4::gdk::MemoryFormat::R8g8b8a8,
+        &bytes,
+        stride,
+    )
+    .upcast()
 }
 
 fn guessed_monitor() -> Option<gtk4::gdk::Monitor> {
