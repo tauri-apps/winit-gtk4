@@ -70,8 +70,6 @@ pub(crate) struct WindowState {
     pub(crate) surface_size: LogicalSize<u32>,
     pub(crate) last_layout: Option<PhysicalSize<u32>>,
     pub(crate) last_position: Option<PhysicalPosition<i32>>,
-    pub(crate) inner_position_rel_parent: Option<PhysicalPosition<i32>>,
-    pub(crate) frame_extents: Option<crate::x11::FrameExtents>,
     pub(crate) scale_factor: f64,
     pub(crate) visible: bool,
     pub(crate) resizable: bool,
