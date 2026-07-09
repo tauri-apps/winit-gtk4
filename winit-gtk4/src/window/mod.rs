@@ -11,7 +11,7 @@ use winit_core::cursor::{Cursor, CursorIcon};
 use winit_core::error::RequestError;
 use winit_core::event::WindowEvent;
 use winit_core::icon::{Icon, RgbaIcon};
-use winit_core::keyboard::ModifiersState;
+use winit_core::keyboard::{ModifiersState, PhysicalKey};
 use winit_core::monitor::{Fullscreen, MonitorHandle};
 use winit_core::window::{
     CursorGrabMode, ImeCapabilities, ImeRequest, ImeRequestError, ResizeDirection, Theme,
@@ -25,10 +25,7 @@ use crate::sink::CommandSink;
 mod dnd;
 mod keyboards;
 mod pointers;
-mod state;
 mod touches;
-
-pub(crate) use state::WindowState;
 
 const TRANSPARENT_WINDOW_CSS_CLASS: &str = "winit-transparent-window";
 const TRANSPARENT_WINDOW_CSS: &str = r#"
@@ -66,6 +63,24 @@ pub struct UnownedWindow {
 struct InitialSurfaceAttributes {
     position: Option<PhysicalPosition<i32>>,
     parent_window: Option<rwh_06::RawWindowHandle>,
+}
+
+#[derive(Debug)]
+pub(crate) struct WindowState {
+    pub(crate) surface_size: LogicalSize<u32>,
+    pub(crate) last_layout: Option<PhysicalSize<u32>>,
+    pub(crate) last_position: Option<PhysicalPosition<i32>>,
+    pub(crate) inner_position_rel_parent: Option<PhysicalPosition<i32>>,
+    pub(crate) frame_extents: Option<crate::x11::FrameExtents>,
+    pub(crate) scale_factor: f64,
+    pub(crate) visible: bool,
+    pub(crate) resizable: bool,
+    pub(crate) has_focus: bool,
+    pub(crate) modifiers: ModifiersState,
+    pub(crate) held_key_press: Option<PhysicalKey>,
+    pub(crate) theme: Option<Theme>,
+    pub(crate) title: String,
+    pub(crate) window_level: WindowLevel,
 }
 
 impl fmt::Debug for UnownedWindow {
