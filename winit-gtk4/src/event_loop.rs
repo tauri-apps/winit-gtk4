@@ -129,7 +129,7 @@ impl EventLoop {
             proxy_wake_up: Arc::new(AtomicBool::new(false)),
         });
         let display_handle = OwnedDisplayHandle::new()?;
-        let xconn = gtk4::gdk::Display::default().and_then(crate::x11::XConnection::new);
+        let xconn = gtk4::gdk::Display::default().and_then(crate::x11::x_connection);
         let event_loop_proxy =
             EventLoopProxy::new(run_state.proxy_wake_up.clone(), context.clone()).into();
 
