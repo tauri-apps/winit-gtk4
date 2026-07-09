@@ -8,7 +8,7 @@ use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position,
 use gtk4::gdk::prelude::{DeviceExt, DisplayExt, SeatExt, SurfaceExt};
 use gtk4::prelude::*;
 use winit_core::cursor::{Cursor, CursorIcon};
-use winit_core::error::RequestError;
+use winit_core::error::{NotSupportedError, RequestError};
 use winit_core::event::WindowEvent;
 use winit_core::icon::{Icon, RgbaIcon};
 use winit_core::keyboard::{ModifiersState, PhysicalKey};
@@ -49,7 +49,7 @@ pub struct UnownedWindow {
     window_id: WindowId,
 
     pub(crate) gtk_window: gtk4::ApplicationWindow,
-    xwindow: Mutex<Option<crate::x11::XWindow>>,
+    xwindow: Mutex<Option<crate::x11::GtkXWindow>>,
 
     display_handle: OwnedDisplayHandle,
     window_handle: Mutex<Option<rwh_06::RawWindowHandle>>,
@@ -70,6 +70,8 @@ pub(crate) struct WindowState {
     pub(crate) surface_size: LogicalSize<u32>,
     pub(crate) last_layout: Option<PhysicalSize<u32>>,
     pub(crate) last_position: Option<PhysicalPosition<i32>>,
+    pub(crate) inner_position_rel_parent: Option<PhysicalPosition<i32>>,
+    pub(crate) frame_extents: Option<crate::x11::FrameExtentsHeuristic>,
     pub(crate) scale_factor: f64,
     pub(crate) visible: bool,
     pub(crate) resizable: bool,
@@ -176,6 +178,8 @@ impl UnownedWindow {
             surface_size,
             last_layout: None,
             last_position: None,
+            inner_position_rel_parent: None,
+            frame_extents: None,
             scale_factor,
             visible,
             resizable,
@@ -231,6 +235,10 @@ impl UnownedWindow {
 
     pub(crate) fn id(&self) -> WindowId {
         self.window_id
+    }
+
+    pub(crate) fn xwindow(&self) -> std::sync::MutexGuard<'_, Option<crate::x11::GtkXWindow>> {
+        self.xwindow.lock().unwrap()
     }
 
     fn connect_events(
@@ -362,7 +370,7 @@ impl UnownedWindow {
 
             // Store the X11 window handle for later use.
             let xconn = xconn.clone();
-            let xwindow = xconn.and_then(|x| crate::x11::XWindow::from_surface(&surface, x));
+            let xwindow = xconn.and_then(|x| crate::x11::GtkXWindow::from_surface(&surface, x));
 
             if let Some(xwindow) = &xwindow {
                 let parent = surface_attributes.parent_window.and_then(crate::x11::parent_window);
@@ -515,10 +523,26 @@ impl UnownedWindow {
                     return gtk4::glib::Propagation::Proceed;
                 }
 
-                let position = PhysicalPosition::new(configure.x, configure.y);
+                let configure_position = PhysicalPosition::new(configure.x, configure.y);
+                // `XSendEvent` (synthetic `ConfigureNotify`) -> position relative to root.
+                // `XConfigureNotify` (real `ConfigureNotify`) -> position relative to parent.
+                let is_synthetic = configure.send_event != 0;
+                if !is_synthetic {
+                    window.update_frame_extents_if_changed(configure_position);
+                    return gtk4::glib::Propagation::Proceed;
+                }
+
+                let position = window
+                    .frame_extents()
+                    .map(|frame_extents| {
+                        let (x, y) = configure_position.into();
+                        let (x, y) = frame_extents.inner_pos_to_outer(x, y);
+                        PhysicalPosition::new(x, y)
+                    })
+                    .unwrap_or(configure_position);
                 let moved = {
                     let mut state = window.state.lock().unwrap();
-                    let moved = state.last_position.is_some_and(|last| last != position);
+                    let moved = state.last_position != Some(position);
                     state.last_position = Some(position);
                     moved
                 };
@@ -561,6 +585,73 @@ impl UnownedWindow {
             }
         });
     }
+
+    fn set_window_icon(&self, icon: Option<&RgbaIcon>) {
+        let Some(surface) = self.gtk_window.surface() else {
+            return;
+        };
+        let Ok(toplevel) = surface.downcast::<gtk4::gdk::Toplevel>() else {
+            return;
+        };
+
+        if let Some(texture) = icon.map(gdk_texture_from_icon) {
+            toplevel.set_icon_list(&[texture]);
+        } else {
+            toplevel.set_icon_list(&[]);
+        }
+    }
+
+    fn set_transparent(&self, transparent: bool) {
+        if transparent {
+            self.gtk_window.add_css_class(TRANSPARENT_WINDOW_CSS_CLASS);
+        } else {
+            self.gtk_window.remove_css_class(TRANSPARENT_WINDOW_CSS_CLASS);
+        }
+    }
+
+    fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
+        self.xwindow().as_ref().and_then(|xwindow| xwindow.inner_position())
+    }
+
+    fn outer_position(&self) -> Option<PhysicalPosition<i32>> {
+        let inner_position = self.inner_position()?;
+        let frame_extents = self.frame_extents()?;
+        Some(frame_extents.inner_pos_to_outer(inner_position.x, inner_position.y).into())
+    }
+
+    fn update_cached_frame_extents(&self) -> Option<crate::x11::FrameExtentsHeuristic> {
+        let frame_extents = self.xwindow().as_ref().map(|xwindow| xwindow.frame_extents())?;
+        self.state.lock().unwrap().frame_extents = Some(frame_extents.clone());
+        Some(frame_extents)
+    }
+
+    fn invalidate_cached_frame_extents(&self) {
+        self.state.lock().unwrap().frame_extents = None;
+    }
+
+    fn update_frame_extents_if_changed(&self, inner_position_rel_parent: PhysicalPosition<i32>) {
+        let changed = {
+            let mut state = self.state.lock().unwrap();
+            let changed = state
+                .inner_position_rel_parent
+                .map(|last| last != inner_position_rel_parent)
+                .unwrap_or(true);
+            state.inner_position_rel_parent = Some(inner_position_rel_parent);
+            changed
+        };
+
+        if changed {
+            self.invalidate_cached_frame_extents();
+        }
+    }
+
+    fn frame_extents(&self) -> Option<crate::x11::FrameExtentsHeuristic> {
+        if let Some(frame_extents) = self.state.lock().unwrap().frame_extents.clone() {
+            Some(frame_extents)
+        } else {
+            self.update_cached_frame_extents()
+        }
+    }
 }
 
 impl Window {
@@ -597,11 +688,22 @@ impl CoreWindow for Window {
     }
 
     fn surface_position(&self) -> PhysicalPosition<i32> {
-        PhysicalPosition::new(0, 0)
+        self.frame_extents()
+            .map(|frame_extents| frame_extents.surface_position())
+            .unwrap_or((0, 0))
+            .into()
     }
 
     fn outer_position(&self) -> Result<PhysicalPosition<i32>, RequestError> {
-        todo!("GTK4 outer_position is not implemented yet")
+        if let Some(position) = self.0.outer_position() {
+            return Ok(position);
+        }
+
+        if let Some(position) = self.state.lock().unwrap().last_position {
+            return Ok(position);
+        }
+
+        Err(NotSupportedError::new("window position information is not available").into())
     }
 
     fn set_outer_position(&self, position: Position) {
@@ -816,31 +918,6 @@ impl CoreWindow for Window {
 
     fn rwh_06_window_handle(&self) -> &dyn rwh_06::HasWindowHandle {
         self
-    }
-}
-
-impl UnownedWindow {
-    fn set_window_icon(&self, icon: Option<&RgbaIcon>) {
-        let Some(surface) = self.gtk_window.surface() else {
-            return;
-        };
-        let Ok(toplevel) = surface.downcast::<gtk4::gdk::Toplevel>() else {
-            return;
-        };
-
-        if let Some(texture) = icon.map(gdk_texture_from_icon) {
-            toplevel.set_icon_list(&[texture]);
-        } else {
-            toplevel.set_icon_list(&[]);
-        }
-    }
-
-    fn set_transparent(&self, transparent: bool) {
-        if transparent {
-            self.gtk_window.add_css_class(TRANSPARENT_WINDOW_CSS_CLASS);
-        } else {
-            self.gtk_window.remove_css_class(TRANSPARENT_WINDOW_CSS_CLASS);
-        }
     }
 }
 

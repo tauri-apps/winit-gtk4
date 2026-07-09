@@ -1,17 +1,28 @@
-use std::fmt;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
 use dpi::PhysicalPosition;
 use gtk4::prelude::*;
 use winit_core::window::WindowLevel;
+use winit_x11::x11_util;
 use x11rb::connection::Connection;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
-use x11rb::rust_connection::RustConnection;
 use x11rb::x11_utils::Serialize;
 
 use crate::event_loop::OwnedDisplayHandle;
+
+pub(crate) use x11_util::FrameExtentsHeuristic;
+pub(crate) use x11_util::XConnection;
+use x11_util::{AtomName, StateOperation};
+
+pub(crate) fn x_connection(display: gtk4::gdk::Display) -> Option<Arc<XConnection>> {
+    let display = display.downcast::<gdk4_x11::X11Display>().ok()?;
+    let root = display.xrootwindow() as xproto::Window;
+    let xconn = Arc::new(XConnection::new(None).ok()?);
+    xconn.update_cached_wm_info(root);
+    Some(xconn)
+}
 
 pub(crate) fn raw_display_handle(
     display: gtk4::gdk::Display,
@@ -45,38 +56,18 @@ pub(crate) fn parent_window(raw: rwh_06::RawWindowHandle) -> Option<xproto::Wind
     }
 }
 
-pub(crate) struct XConnection {
-    xconn: RustConnection,
-    root: xproto::Window,
-    atoms: Box<Atoms>,
-}
-
-impl fmt::Debug for XConnection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("XConnection").field("root", &self.root).finish_non_exhaustive()
-    }
-}
-
-impl XConnection {
-    pub(crate) fn new(display: gtk4::gdk::Display) -> Option<Arc<Self>> {
-        let display = display.downcast::<gdk4_x11::X11Display>().ok()?;
-        let display_name = display.name().to_string();
-        let (xconn, _) = x11rb::connect(Some(&display_name)).ok()?;
-        let atoms = Atoms::new(&xconn).ok()?.reply().ok()?;
-        let root = display.xrootwindow() as xproto::Window;
-
-        Some(Arc::new(Self { xconn, root, atoms: Box::new(atoms) }))
-    }
-}
-
 #[derive(Clone, Debug)]
-pub struct XWindow {
+pub struct GtkXWindow {
     xconn: Arc<XConnection>,
     xid: xproto::Window,
+    root: xproto::Window,
 }
 
-impl XWindow {
+impl GtkXWindow {
     pub fn from_surface(surface: &gtk4::gdk::Surface, xconn: Arc<XConnection>) -> Option<Self> {
+        let display = surface.display().downcast::<gdk4_x11::X11Display>().ok()?;
+        let root = display.xrootwindow() as xproto::Window;
+
         let surface = surface.clone().downcast::<gdk4_x11::X11Surface>().ok()?;
 
         let xid = surface.xid();
@@ -84,48 +75,57 @@ impl XWindow {
             return None;
         }
 
-        Some(Self { xconn, xid: xid as xproto::Window })
+        Some(Self { xconn, xid: xid as xproto::Window, root })
     }
 
     pub fn set_position(&self, position: PhysicalPosition<i32>) {
-        let mut hints = WmSizeHints::get_normal_hints(&self.xconn.xconn, self.xid)
+        let mut hints = WmSizeHints::get_normal_hints(self.xconn.xcb_connection(), self.xid)
             .ok()
             .and_then(|cookie| cookie.reply().ok())
             .flatten()
             .unwrap_or_else(WmSizeHints::new);
 
         hints.position = Some((WmSizeHintsSpecification::UserSpecified, position.x, position.y));
-        let _ = hints.set_normal_hints(&self.xconn.xconn, self.xid);
+        let _ = hints.set_normal_hints(self.xconn.xcb_connection(), self.xid);
 
         let configure = xproto::ConfigureWindowAux::new().x(position.x).y(position.y);
-        let _ = self.xconn.xconn.configure_window(self.xid, &configure);
+        let _ = self.xconn.xcb_connection().configure_window(self.xid, &configure);
 
-        let _ = self.xconn.xconn.flush();
+        let _ = self.xconn.xcb_connection().flush();
+    }
+
+    pub fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
+        let coords = self.xconn.translate_coords_root(self.xid, self.root).ok()?;
+        Some(PhysicalPosition::new(coords.dst_x.into(), coords.dst_y.into()))
+    }
+
+    pub fn frame_extents(&self) -> FrameExtentsHeuristic {
+        self.xconn.get_frame_extents_heuristic(self.xid, self.root)
     }
 
     pub fn set_parent(&self, parent: xproto::Window, position: PhysicalPosition<i32>) {
         let x = position.x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         let y = position.y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        let _ = self.xconn.xconn.reparent_window(self.xid, parent, x, y);
+        let _ = self.xconn.xcb_connection().reparent_window(self.xid, parent, x, y);
 
-        let _ = self.xconn.xconn.flush();
+        let _ = self.xconn.xcb_connection().flush();
     }
 
     pub fn set_window_level(&self, level: WindowLevel) {
         self.toggle_atom(AtomName::_NET_WM_STATE_ABOVE, level == WindowLevel::AlwaysOnTop);
         self.toggle_atom(AtomName::_NET_WM_STATE_BELOW, level == WindowLevel::AlwaysOnBottom);
 
-        let _ = self.xconn.xconn.flush();
+        let _ = self.xconn.xcb_connection().flush();
     }
 
     fn toggle_atom(&self, atom_name: AtomName, enabled: bool) {
-        let atoms = &self.xconn.atoms;
+        let atoms = self.xconn.atoms();
         let atom = atoms[atom_name];
         self.set_netwm(enabled.into(), (atom, 0, 0, 0));
     }
 
     fn set_netwm(&self, operation: StateOperation, properties: (u32, u32, u32, u32)) {
-        let atoms = &self.xconn.atoms;
+        let atoms = self.xconn.atoms();
         let state_atom = atoms[AtomName::_NET_WM_STATE];
 
         let event = xproto::ClientMessageEvent {
@@ -137,65 +137,11 @@ impl XWindow {
             type_: state_atom,
         };
 
-        let _ = self.xconn.xconn.send_event(
+        let _ = self.xconn.xcb_connection().send_event(
             false,
-            self.xconn.root,
+            self.root,
             xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY,
             event.serialize(),
         );
-    }
-}
-
-macro_rules! atom_manager {
-    ($($name:ident $(:$lit:literal)?),* $(,)?) => {
-        x11rb::atom_manager! {
-            /// The atoms used by `winit-gtk4`.
-            pub(crate) Atoms: AtomsCookie {
-                $($name $(:$lit)?,)*
-            }
-        }
-
-        /// Indices into the `Atoms` struct.
-        #[derive(Clone, Copy, Debug)]
-        #[allow(non_camel_case_types)]
-        enum AtomName {
-            $($name,)*
-        }
-
-        impl AtomName {
-            fn atom_from(self, atoms: &Atoms) -> &xproto::Atom {
-                match self {
-                    $(AtomName::$name => &atoms.$name,)*
-                }
-            }
-        }
-    };
-}
-
-atom_manager! {
-    _NET_WM_STATE,
-    _NET_WM_STATE_ABOVE,
-    _NET_WM_STATE_BELOW,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum StateOperation {
-    Remove = 0, // _NET_WM_STATE_REMOVE
-    Add = 1,    // _NET_WM_STATE_ADD
-    Toggle = 2, // _NET_WM_STATE_TOGGLE
-}
-
-impl From<bool> for StateOperation {
-    fn from(op: bool) -> Self {
-        if op { StateOperation::Add } else { StateOperation::Remove }
-    }
-}
-
-impl std::ops::Index<AtomName> for Atoms {
-    type Output = x11rb::protocol::xproto::Atom;
-
-    fn index(&self, index: AtomName) -> &Self::Output {
-        index.atom_from(self)
     }
 }
