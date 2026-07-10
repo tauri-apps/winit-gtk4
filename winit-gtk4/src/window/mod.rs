@@ -912,8 +912,9 @@ impl CoreWindow for Window {
         Some(self.state.lock().unwrap().minimized)
     }
 
-    fn set_maximized(&self, _maximized: bool) {
-        todo!("GTK4 set_maximized is not implemented yet")
+    fn set_maximized(&self, maximized: bool) {
+        self.state.lock().unwrap().maximized = maximized;
+        self.queue_command(WindowCommand::SetMaximized(maximized));
     }
 
     fn is_maximized(&self) -> bool {
@@ -1053,6 +1054,7 @@ pub(crate) enum WindowCommand {
     SetResizable(bool),
     SetEnabledButtons(WindowButtons),
     SetMinimized(bool),
+    SetMaximized(bool),
     SetFullscreen(Option<Fullscreen>),
     SetDecorated(bool),
     SetWindowLevel(WindowLevel),
@@ -1101,6 +1103,7 @@ impl WindowCommand {
                     window.gtk_window.unminimize();
                 }
             },
+            WindowCommand::SetMaximized(maximized) => window.gtk_window.set_maximized(maximized),
             WindowCommand::SetFullscreen(fullscreen) => window.set_fullscreen(fullscreen.as_ref()),
             WindowCommand::SetDecorated(decorated) => window.gtk_window.set_decorated(decorated),
             WindowCommand::SetWindowLevel(level) => {
