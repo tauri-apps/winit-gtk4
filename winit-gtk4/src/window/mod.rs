@@ -840,9 +840,7 @@ impl CoreWindow for Window {
         self.queue_command(WindowCommand::SetTransparent(transparent));
     }
 
-    fn set_blur(&self, _blur: bool) {
-        todo!("GTK4 set_blur is not implemented yet")
-    }
+    fn set_blur(&self, _blur: bool) {}
 
     fn set_visible(&self, visible: bool) {
         self.state.lock().unwrap().visible = visible;
