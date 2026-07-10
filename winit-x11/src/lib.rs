@@ -15,8 +15,6 @@ macro_rules! os_error {
 
 mod activation;
 mod atoms;
-#[doc(hidden)]
-pub mod x11_util;
 mod dnd;
 mod event_loop;
 mod event_processor;
@@ -25,6 +23,8 @@ mod ime;
 mod monitor;
 mod util;
 mod window;
+#[doc(hidden)]
+pub mod x11_util;
 mod xdisplay;
 mod xsettings;
 
