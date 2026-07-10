@@ -29,6 +29,17 @@ pub(crate) fn primary_monitor() -> Option<CoreMonitorHandle> {
     MonitorHandle::new(&monitor).map(|monitor| CoreMonitorHandle(Arc::new(monitor)))
 }
 
+pub(crate) fn gdk_monitor(handle: &CoreMonitorHandle) -> Option<gtk4::gdk::Monitor> {
+    let handle = handle.cast_ref::<MonitorHandle>()?;
+    let display = gtk4::gdk::Display::default()?;
+    let monitors = display.monitors();
+
+    (0..monitors.n_items()).find_map(|index| {
+        let monitor = monitors.item(index)?.downcast::<gtk4::gdk::Monitor>().ok()?;
+        (native_monitor_id(&monitor) == Some(handle.native_id)).then_some(monitor)
+    })
+}
+
 fn monitors_for_display(display: &gtk4::gdk::Display) -> Vec<CoreMonitorHandle> {
     let monitors = display.monitors();
     (0..monitors.n_items())
