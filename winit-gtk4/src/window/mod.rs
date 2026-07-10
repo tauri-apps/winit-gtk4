@@ -75,6 +75,7 @@ pub(crate) struct WindowState {
     pub(crate) scale_factor: f64,
     pub(crate) visible: bool,
     pub(crate) resizable: bool,
+    pub(crate) minimized: bool,
     pub(crate) maximized: bool,
     pub(crate) fullscreen: Option<Fullscreen>,
     pub(crate) decorated: bool,
@@ -207,6 +208,7 @@ impl UnownedWindow {
             scale_factor,
             visible,
             resizable,
+            minimized: false,
             maximized,
             fullscreen: fullscreen.clone(),
             decorated,
@@ -436,6 +438,7 @@ impl UnownedWindow {
             Self::connect_scale_factor(&shared, &surface, window.clone());
             Self::connect_surface_layout(&shared, &surface, window.clone());
             Self::connect_moved(&shared, &surface, window.clone());
+            Self::connect_toplevel_state(&surface, window.clone());
 
             let Some(window) = window.upgrade() else {
                 return;
@@ -522,6 +525,26 @@ impl UnownedWindow {
 
             let mut shared = shared.borrow_mut();
             shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window.id());
+        });
+    }
+
+    fn connect_toplevel_state(surface: &gtk4::gdk::Surface, window: Weak<UnownedWindow>) {
+        let Ok(toplevel) = surface.clone().downcast::<gtk4::gdk::Toplevel>() else {
+            return;
+        };
+
+        if let Some(window) = window.upgrade() {
+            let is_minimized = toplevel.state().contains(gtk4::gdk::ToplevelState::MINIMIZED);
+            window.state.lock().unwrap().minimized = is_minimized;
+        }
+
+        toplevel.connect_state_notify(move |toplevel| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
+            let is_minimized = toplevel.state().contains(gtk4::gdk::ToplevelState::MINIMIZED);
+            window.state.lock().unwrap().minimized = is_minimized;
         });
     }
 
@@ -881,12 +904,12 @@ impl CoreWindow for Window {
         self.state.lock().unwrap().enabled_buttons
     }
 
-    fn set_minimized(&self, _minimized: bool) {
-        todo!("GTK4 set_minimized is not implemented yet")
+    fn set_minimized(&self, minimized: bool) {
+        self.queue_command(WindowCommand::SetMinimized(minimized));
     }
 
     fn is_minimized(&self) -> Option<bool> {
-        todo!("GTK4 is_minimized is not implemented yet")
+        Some(self.state.lock().unwrap().minimized)
     }
 
     fn set_maximized(&self, _maximized: bool) {
@@ -1029,6 +1052,7 @@ pub(crate) enum WindowCommand {
     SetVisible(bool),
     SetResizable(bool),
     SetEnabledButtons(WindowButtons),
+    SetMinimized(bool),
     SetFullscreen(Option<Fullscreen>),
     SetDecorated(bool),
     SetWindowLevel(WindowLevel),
@@ -1069,6 +1093,13 @@ impl WindowCommand {
             WindowCommand::SetEnabledButtons(buttons) => {
                 // GTK4 only exposes the close button through the native toplevel API.
                 window.gtk_window.set_deletable(buttons.contains(WindowButtons::CLOSE));
+            },
+            WindowCommand::SetMinimized(minimized) => {
+                if minimized {
+                    window.gtk_window.minimize();
+                } else {
+                    window.gtk_window.unminimize();
+                }
             },
             WindowCommand::SetFullscreen(fullscreen) => window.set_fullscreen(fullscreen.as_ref()),
             WindowCommand::SetDecorated(decorated) => window.gtk_window.set_decorated(decorated),
