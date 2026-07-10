@@ -945,9 +945,7 @@ impl CoreWindow for Window {
         self.state.lock().unwrap().theme
     }
 
-    fn set_content_protected(&self, _protected: bool) {
-        todo!("GTK4 set_content_protected is not implemented yet")
-    }
+    fn set_content_protected(&self, _protected: bool) {}
 
     fn title(&self) -> String {
         self.state.lock().unwrap().title.clone()
