@@ -67,6 +67,10 @@ impl WindowExtGtk4 for dyn CoreWindow + '_ {
 }
 
 /// Window attributes specific to GTK4.
+///
+/// GTK application identity is configured on
+/// [`EventLoopBuilderExtGtk4::with_application_id`] because it is a process/application property,
+/// not a per-window setting.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct WindowAttributesGtk4 {}
 
