@@ -813,9 +813,7 @@ impl CoreWindow for Window {
         let surface_size = self.surface_size();
         self.frame_extents()
             .map(|frame_extents| {
-                frame_extents
-                    .surface_size_to_outer(surface_size.width, surface_size.height)
-                    .into()
+                frame_extents.surface_size_to_outer(surface_size.width, surface_size.height).into()
             })
             .unwrap_or(surface_size)
     }
@@ -824,8 +822,9 @@ impl CoreWindow for Window {
         PhysicalInsets::new(0, 0, 0, 0)
     }
 
-    fn set_min_surface_size(&self, _min_size: Option<Size>) {
-        todo!("GTK4 set_min_surface_size is not implemented yet")
+    fn set_min_surface_size(&self, min_size: Option<Size>) {
+        let scale_factor = self.state.lock().unwrap().scale_factor;
+        self.queue_command(WindowCommand::SetMinSurfaceSize { min_size, scale_factor });
     }
 
     fn set_max_surface_size(&self, _max_size: Option<Size>) {
@@ -1019,6 +1018,7 @@ impl CoreWindow for Window {
 pub(crate) enum WindowCommand {
     RequestRedraw,
     SetSurfaceSize { size: Size, scale_factor: f64 },
+    SetMinSurfaceSize { min_size: Option<Size>, scale_factor: f64 },
     SetOuterPosition { position: Position, scale_factor: f64 },
     SetTheme(Option<Theme>),
     SetTitle(String),
@@ -1039,6 +1039,12 @@ impl WindowCommand {
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
                 let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
                 window.gtk_window.set_default_size(width, height);
+            },
+            WindowCommand::SetMinSurfaceSize { min_size, scale_factor } => {
+                let (width, height) = min_size
+                    .map(|size| size.to_logical::<i32>(scale_factor).into())
+                    .unwrap_or((-1, -1));
+                window.gtk_window.set_size_request(width, height);
             },
             WindowCommand::SetOuterPosition { position, scale_factor } => {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
