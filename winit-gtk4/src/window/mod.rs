@@ -163,7 +163,7 @@ impl UnownedWindow {
             .maximized(maximized)
             .fullscreened(fullscreened);
 
-        // TODO: support max_surface_size
+        // GTK4/GDK exposes minimum toplevel size, but no maximum-size constraint.
         if let Some(min_surface_size) = attributes.min_surface_size {
             let (width, height): (i32, i32) =
                 min_surface_size.to_logical::<i32>(scale_factor).into();
@@ -822,7 +822,7 @@ impl CoreWindow for Window {
     }
 
     fn set_max_surface_size(&self, _max_size: Option<Size>) {
-        todo!("GTK4 set_max_surface_size is not implemented yet")
+        // GTK4/GDK does not expose a native maximum toplevel size constraint.
     }
 
     fn surface_resize_increments(&self) -> Option<PhysicalSize<u32>> {
