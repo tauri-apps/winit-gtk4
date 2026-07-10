@@ -78,6 +78,7 @@ pub(crate) struct WindowState {
     pub(crate) maximized: bool,
     pub(crate) fullscreen: Option<Fullscreen>,
     pub(crate) decorated: bool,
+    pub(crate) enabled_buttons: WindowButtons,
     pub(crate) has_focus: bool,
     pub(crate) modifiers: ModifiersState,
     pub(crate) held_key_press: Option<PhysicalKey>,
@@ -146,6 +147,7 @@ impl UnownedWindow {
         let fullscreened = fullscreen.is_some();
         let maximized = attributes.maximized && !fullscreened;
         let decorated = attributes.decorations;
+        let enabled_buttons = attributes.enabled_buttons;
 
         let mut builder = gtk4::ApplicationWindow::builder()
             .application(&app)
@@ -157,7 +159,7 @@ impl UnownedWindow {
             // GTK only exposes the close button through the native toplevel API.
             // Minimize/maximize hints require taking over the titlebar, so winit-gtk4 leaves them
             // to the compositor/window manager.
-            .deletable(attributes.enabled_buttons.contains(WindowButtons::CLOSE))
+            .deletable(enabled_buttons.contains(WindowButtons::CLOSE))
             .maximized(maximized)
             .fullscreened(fullscreened);
 
@@ -208,6 +210,7 @@ impl UnownedWindow {
             maximized,
             fullscreen: fullscreen.clone(),
             decorated,
+            enabled_buttons,
             has_focus: false,
             modifiers: ModifiersState::default(),
             held_key_press: None,
@@ -860,12 +863,13 @@ impl CoreWindow for Window {
         self.state.lock().unwrap().resizable
     }
 
-    fn set_enabled_buttons(&self, _buttons: WindowButtons) {
-        todo!("GTK4 set_enabled_buttons is not implemented yet")
+    fn set_enabled_buttons(&self, buttons: WindowButtons) {
+        self.state.lock().unwrap().enabled_buttons = buttons;
+        self.queue_command(WindowCommand::SetEnabledButtons(buttons));
     }
 
     fn enabled_buttons(&self) -> WindowButtons {
-        todo!("GTK4 enabled_buttons is not implemented yet")
+        self.state.lock().unwrap().enabled_buttons
     }
 
     fn set_minimized(&self, _minimized: bool) {
@@ -1014,6 +1018,7 @@ pub(crate) enum WindowCommand {
     SetTransparent(bool),
     SetVisible(bool),
     SetResizable(bool),
+    SetEnabledButtons(WindowButtons),
     SetFullscreen(Option<Fullscreen>),
     SetDecorated(bool),
     SetWindowLevel(WindowLevel),
@@ -1043,6 +1048,10 @@ impl WindowCommand {
             WindowCommand::SetTransparent(transparent) => window.set_transparent(transparent),
             WindowCommand::SetVisible(visible) => window.gtk_window.set_visible(visible),
             WindowCommand::SetResizable(resizable) => window.gtk_window.set_resizable(resizable),
+            WindowCommand::SetEnabledButtons(buttons) => {
+                // GTK4 only exposes the close button through the native toplevel API.
+                window.gtk_window.set_deletable(buttons.contains(WindowButtons::CLOSE));
+            },
             WindowCommand::SetFullscreen(fullscreen) => window.set_fullscreen(fullscreen.as_ref()),
             WindowCommand::SetDecorated(decorated) => window.gtk_window.set_decorated(decorated),
             WindowCommand::SetWindowLevel(level) => {
