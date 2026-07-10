@@ -823,11 +823,11 @@ impl CoreWindow for Window {
     }
 
     fn surface_resize_increments(&self) -> Option<PhysicalSize<u32>> {
-        todo!("GTK4 surface_resize_increments is not implemented yet")
+        None
     }
 
     fn set_surface_resize_increments(&self, _increments: Option<Size>) {
-        todo!("GTK4 set_surface_resize_increments is not implemented yet")
+        // GTK4/GDK does not expose a native toplevel geometry-increment hint.
     }
 
     fn set_title(&self, title: &str) {
