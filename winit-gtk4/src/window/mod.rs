@@ -76,6 +76,7 @@ pub(crate) struct WindowState {
     pub(crate) visible: bool,
     pub(crate) resizable: bool,
     pub(crate) maximized: bool,
+    pub(crate) fullscreen: Option<Fullscreen>,
     pub(crate) has_focus: bool,
     pub(crate) modifiers: ModifiersState,
     pub(crate) held_key_press: Option<PhysicalKey>,
@@ -140,8 +141,9 @@ impl UnownedWindow {
             parent_window: attributes.parent_window().copied(),
         };
 
-        let fullscreen = attributes.fullscreen.is_some();
-        let maximized = attributes.maximized && !fullscreen;
+        let fullscreen = effective_fullscreen(attributes.fullscreen);
+        let fullscreened = fullscreen.is_some();
+        let maximized = attributes.maximized && !fullscreened;
 
         let mut builder = gtk4::ApplicationWindow::builder()
             .application(&app)
@@ -155,7 +157,7 @@ impl UnownedWindow {
             // to the compositor/window manager.
             .deletable(attributes.enabled_buttons.contains(WindowButtons::CLOSE))
             .maximized(maximized)
-            .fullscreened(fullscreen);
+            .fullscreened(fullscreened);
 
         // TODO: support max_surface_size
         if let Some(min_surface_size) = attributes.min_surface_size {
@@ -202,6 +204,7 @@ impl UnownedWindow {
             visible,
             resizable,
             maximized,
+            fullscreen: fullscreen.clone(),
             has_focus: false,
             modifiers: ModifiersState::default(),
             held_key_press: None,
@@ -244,6 +247,9 @@ impl UnownedWindow {
 
         window.set_window_icon(window_icon.as_ref().and_then(|icon| icon.cast_ref()));
         window.set_transparent(attributes.transparent);
+        if fullscreen.is_some() {
+            window.set_fullscreen(fullscreen.as_ref());
+        }
 
         if visible {
             window.gtk_window.present();
@@ -272,6 +278,7 @@ impl UnownedWindow {
         Self::connect_focus(event_loop, gtk_window, window.clone());
         Self::connect_surface_events(event_loop, gtk_window, window.clone(), surface_attributes);
         Self::connect_maximized(gtk_window, window.clone());
+        Self::connect_fullscreen(gtk_window, window.clone());
         Self::connect_theme(event_loop, gtk_window, window.clone());
         dnd::connect(event_loop, gtk_window, window.clone());
         keyboards::connect(event_loop, gtk_window, window.clone());
@@ -371,8 +378,26 @@ impl UnownedWindow {
                 return;
             };
 
-            eprintln!("gtk_window.is_maximized() = {}", gtk_window.is_maximized());
             window.state.lock().unwrap().maximized = gtk_window.is_maximized();
+        });
+    }
+
+    fn connect_fullscreen(gtk_window: &gtk4::ApplicationWindow, window: Weak<UnownedWindow>) {
+        gtk_window.connect_fullscreened_notify(move |gtk_window| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
+            let mut state = window.state.lock().unwrap();
+            if gtk_window.is_fullscreen() {
+                // GTK reports fullscreen as a boolean, so preserve any monitor-specific
+                // state cached from a winit request.
+                if state.fullscreen.is_none() {
+                    state.fullscreen = Some(Fullscreen::Borderless(None));
+                }
+            } else {
+                state.fullscreen = None;
+            }
         });
     }
 
@@ -632,6 +657,20 @@ impl UnownedWindow {
         }
     }
 
+    fn set_fullscreen(&self, fullscreen: Option<&Fullscreen>) {
+        match fullscreen {
+            Some(Fullscreen::Borderless(Some(monitor)) | Fullscreen::Exclusive(monitor, _)) => {
+                if let Some(monitor) = crate::monitor::gdk_monitor(monitor) {
+                    self.gtk_window.fullscreen_on_monitor(&monitor);
+                } else {
+                    self.gtk_window.fullscreen();
+                }
+            },
+            Some(Fullscreen::Borderless(None)) => self.gtk_window.fullscreen(),
+            None => self.gtk_window.unfullscreen(),
+        }
+    }
+
     fn set_transparent(&self, transparent: bool) {
         if transparent {
             self.gtk_window.add_css_class(TRANSPARENT_WINDOW_CSS_CLASS);
@@ -833,12 +872,14 @@ impl CoreWindow for Window {
         self.state.lock().unwrap().maximized
     }
 
-    fn set_fullscreen(&self, _fullscreen: Option<Fullscreen>) {
-        todo!("GTK4 set_fullscreen is not implemented yet")
+    fn set_fullscreen(&self, fullscreen: Option<Fullscreen>) {
+        let fullscreen = effective_fullscreen(fullscreen);
+        self.state.lock().unwrap().fullscreen = fullscreen.clone();
+        self.queue_command(WindowCommand::SetFullscreen(fullscreen));
     }
 
     fn fullscreen(&self) -> Option<Fullscreen> {
-        todo!("GTK4 fullscreen is not implemented yet")
+        self.state.lock().unwrap().fullscreen.clone()
     }
 
     fn set_decorations(&self, _decorations: bool) {
@@ -962,6 +1003,7 @@ pub(crate) enum WindowCommand {
     SetTransparent(bool),
     SetVisible(bool),
     SetResizable(bool),
+    SetFullscreen(Option<Fullscreen>),
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
 }
@@ -989,6 +1031,7 @@ impl WindowCommand {
             WindowCommand::SetTransparent(transparent) => window.set_transparent(transparent),
             WindowCommand::SetVisible(visible) => window.gtk_window.set_visible(visible),
             WindowCommand::SetResizable(resizable) => window.gtk_window.set_resizable(resizable),
+            WindowCommand::SetFullscreen(fullscreen) => window.set_fullscreen(fullscreen.as_ref()),
             WindowCommand::SetWindowLevel(level) => {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
                     xwindow.set_window_level(level);
@@ -1009,6 +1052,14 @@ fn install_transparency_css(window: &gtk4::ApplicationWindow) {
         &provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// GTK has no exclusive video mode fullscreen, so we map it to borderless fullscreen.
+fn effective_fullscreen(fullscreen: Option<Fullscreen>) -> Option<Fullscreen> {
+    match fullscreen {
+        Some(Fullscreen::Exclusive(monitor, _)) => Some(Fullscreen::Borderless(Some(monitor))),
+        fullscreen => fullscreen,
+    }
 }
 
 fn gdk_cursor_from_icon(cursor_icon: CursorIcon) -> Option<gtk4::gdk::Cursor> {
