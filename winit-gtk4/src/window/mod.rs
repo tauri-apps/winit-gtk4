@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak};
 
 use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
-use gtk4::gdk::prelude::{DeviceExt, DisplayExt, SeatExt, SurfaceExt};
+use gtk4::gdk::prelude::{DeviceExt, DisplayExt, SeatExt, SurfaceExt, ToplevelExt};
 use gtk4::prelude::*;
 use winit_core::cursor::{Cursor, CursorIcon};
 use winit_core::error::{NotSupportedError, RequestError};
@@ -960,7 +960,7 @@ impl CoreWindow for Window {
     }
 
     fn focus_window(&self) {
-        todo!("GTK4 focus_window is not implemented yet")
+        self.queue_command(WindowCommand::FocusWindow);
     }
 
     fn has_focus(&self) -> bool {
@@ -1059,6 +1059,7 @@ pub(crate) enum WindowCommand {
     SetDecorated(bool),
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
+    FocusWindow,
 }
 
 impl WindowCommand {
@@ -1113,6 +1114,15 @@ impl WindowCommand {
             },
             WindowCommand::SetWindowIcon(icon) => {
                 window.set_window_icon(icon.as_ref().and_then(|icon| icon.cast_ref()));
+            },
+            WindowCommand::FocusWindow => {
+                if let Some(toplevel) = window
+                    .gtk_window
+                    .surface()
+                    .and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok())
+                {
+                    toplevel.focus(0);
+                }
             },
         }
     }
