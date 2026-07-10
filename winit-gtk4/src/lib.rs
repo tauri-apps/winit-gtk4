@@ -8,6 +8,7 @@ mod window;
 mod x11;
 
 use winit_core::event_loop::ActiveEventLoop as CoreActiveEventLoop;
+use winit_core::window::{PlatformWindowAttributes, Window as CoreWindow};
 
 pub use self::event_loop::{ActiveEventLoop, EventLoop, PlatformSpecificEventLoopAttributes};
 pub use self::window::Window;
@@ -38,4 +39,39 @@ pub trait EventLoopBuilderExtGtk4 {
 
     /// Set the GTK application ID.
     fn with_application_id(&mut self, application_id: String) -> &mut Self;
+}
+
+/// Additional methods on [`Window`] that are specific to GTK4.
+///
+/// [`Window`]: winit_core::window::Window
+pub trait WindowExtGtk4 {
+    /// Returns the underlying GTK application window.
+    ///
+    /// GTK objects must be used according to GTK's thread and main-context rules.
+    fn gtk_window(&self) -> Option<gtk4::ApplicationWindow>;
+
+    /// Returns the underlying GDK surface, if the GTK window has been realized.
+    fn gdk_surface(&self) -> Option<gtk4::gdk::Surface>;
+}
+
+impl WindowExtGtk4 for dyn CoreWindow + '_ {
+    #[inline]
+    fn gtk_window(&self) -> Option<gtk4::ApplicationWindow> {
+        Some(self.cast_ref::<Window>()?.gtk_window())
+    }
+
+    #[inline]
+    fn gdk_surface(&self) -> Option<gtk4::gdk::Surface> {
+        self.cast_ref::<Window>()?.gdk_surface()
+    }
+}
+
+/// Window attributes specific to GTK4.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct WindowAttributesGtk4 {}
+
+impl PlatformWindowAttributes for WindowAttributesGtk4 {
+    fn box_clone(&self) -> Box<dyn PlatformWindowAttributes> {
+        Box::new(self.clone())
+    }
 }

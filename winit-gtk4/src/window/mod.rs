@@ -99,13 +99,27 @@ impl Window {
     ) -> Result<Self, RequestError> {
         Ok(Self(UnownedWindow::new(event_loop, attributes)?))
     }
+
+    pub(crate) fn gtk_window(&self) -> gtk4::ApplicationWindow {
+        self.gtk_window.clone()
+    }
+
+    pub(crate) fn gdk_surface(&self) -> Option<gtk4::gdk::Surface> {
+        self.gtk_window.surface()
+    }
 }
 
 impl UnownedWindow {
     fn new(
         event_loop: &ActiveEventLoop,
-        attributes: WindowAttributes,
+        mut attributes: WindowAttributes,
     ) -> Result<Arc<Self>, RequestError> {
+        let _gtk4_attributes = attributes
+            .platform
+            .take()
+            .and_then(|attrs| attrs.cast::<crate::WindowAttributesGtk4>().ok())
+            .unwrap_or_default();
+
         // Clone the app out of `SharedState` before `present()`, which can
         // synchronously realize the widget and re-enter callbacks that mutate it.
         let app = event_loop.shared.borrow().app.clone();
