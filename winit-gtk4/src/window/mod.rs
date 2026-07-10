@@ -790,7 +790,10 @@ impl CoreWindow for Window {
             return Ok(position);
         }
 
-        Err(NotSupportedError::new("window position information is not available").into())
+        Err(NotSupportedError::new(
+            "window position information is not available on this GDK backend",
+        )
+        .into())
     }
 
     fn set_outer_position(&self, position: Position) {
@@ -1050,6 +1053,8 @@ impl WindowCommand {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
                     let position = position.to_physical::<i32>(scale_factor);
                     xwindow.set_position(position);
+                } else {
+                    // GDK Wayland does not support client-driven toplevel positioning.
                 }
             },
             WindowCommand::SetTheme(theme) => {
