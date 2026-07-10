@@ -75,6 +75,7 @@ pub(crate) struct WindowState {
     pub(crate) scale_factor: f64,
     pub(crate) visible: bool,
     pub(crate) resizable: bool,
+    pub(crate) maximized: bool,
     pub(crate) has_focus: bool,
     pub(crate) modifiers: ModifiersState,
     pub(crate) held_key_press: Option<PhysicalKey>,
@@ -140,6 +141,7 @@ impl UnownedWindow {
         };
 
         let fullscreen = attributes.fullscreen.is_some();
+        let maximized = attributes.maximized && !fullscreen;
 
         let mut builder = gtk4::ApplicationWindow::builder()
             .application(&app)
@@ -152,7 +154,7 @@ impl UnownedWindow {
             // Minimize/maximize hints require taking over the titlebar, so winit-gtk4 leaves them
             // to the compositor/window manager.
             .deletable(attributes.enabled_buttons.contains(WindowButtons::CLOSE))
-            .maximized(attributes.maximized && !fullscreen)
+            .maximized(maximized)
             .fullscreened(fullscreen);
 
         // TODO: support max_surface_size
@@ -199,6 +201,7 @@ impl UnownedWindow {
             scale_factor,
             visible,
             resizable,
+            maximized,
             has_focus: false,
             modifiers: ModifiersState::default(),
             held_key_press: None,
@@ -268,6 +271,7 @@ impl UnownedWindow {
         Self::connect_destroy(event_loop, gtk_window, window_id);
         Self::connect_focus(event_loop, gtk_window, window.clone());
         Self::connect_surface_events(event_loop, gtk_window, window.clone(), surface_attributes);
+        Self::connect_maximized(gtk_window, window.clone());
         Self::connect_theme(event_loop, gtk_window, window.clone());
         dnd::connect(event_loop, gtk_window, window.clone());
         keyboards::connect(event_loop, gtk_window, window.clone());
@@ -358,6 +362,17 @@ impl UnownedWindow {
                 event_sink.push_window_event(mods_event, window_id);
                 event_sink.push_window_event(focus_event, window_id);
             }
+        });
+    }
+
+    fn connect_maximized(gtk_window: &gtk4::ApplicationWindow, window: Weak<UnownedWindow>) {
+        gtk_window.connect_maximized_notify(move |gtk_window| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
+            eprintln!("gtk_window.is_maximized() = {}", gtk_window.is_maximized());
+            window.state.lock().unwrap().maximized = gtk_window.is_maximized();
         });
     }
 
@@ -815,7 +830,7 @@ impl CoreWindow for Window {
     }
 
     fn is_maximized(&self) -> bool {
-        todo!("GTK4 is_maximized is not implemented yet")
+        self.state.lock().unwrap().maximized
     }
 
     fn set_fullscreen(&self, _fullscreen: Option<Fullscreen>) {
