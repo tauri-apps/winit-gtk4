@@ -810,7 +810,14 @@ impl CoreWindow for Window {
     }
 
     fn outer_size(&self) -> PhysicalSize<u32> {
-        todo!("GTK4 outer_size is not implemented yet")
+        let surface_size = self.surface_size();
+        self.frame_extents()
+            .map(|frame_extents| {
+                frame_extents
+                    .surface_size_to_outer(surface_size.width, surface_size.height)
+                    .into()
+            })
+            .unwrap_or(surface_size)
     }
 
     fn safe_area(&self) -> PhysicalInsets<u32> {
