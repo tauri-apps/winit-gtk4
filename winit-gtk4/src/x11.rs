@@ -5,16 +5,14 @@ use dpi::PhysicalPosition;
 use gtk4::prelude::*;
 use winit_core::window::WindowLevel;
 use winit_x11::x11_util;
+use x11_util::{AtomName, StateOperation};
+pub(crate) use x11_util::{FrameExtentsHeuristic, XConnection};
 use x11rb::connection::Connection;
 use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
 use x11rb::x11_utils::Serialize;
 
 use crate::event_loop::OwnedDisplayHandle;
-
-pub(crate) use x11_util::FrameExtentsHeuristic;
-pub(crate) use x11_util::XConnection;
-use x11_util::{AtomName, StateOperation};
 
 pub(crate) fn x_connection(display: gtk4::gdk::Display) -> Option<Arc<XConnection>> {
     let display = display.downcast::<gdk4_x11::X11Display>().ok()?;

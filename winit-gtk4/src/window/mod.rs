@@ -148,7 +148,9 @@ impl UnownedWindow {
             .default_height(surface_size.height as i32)
             .resizable(attributes.resizable)
             .decorated(attributes.decorations)
-            // TODO: Support minimizable/maximizable button hints
+            // GTK only exposes the close button through the native toplevel API.
+            // Minimize/maximize hints require taking over the titlebar, so winit-gtk4 leaves them
+            // to the compositor/window manager.
             .deletable(attributes.enabled_buttons.contains(WindowButtons::CLOSE))
             .maximized(attributes.maximized && !fullscreen)
             .fullscreened(fullscreen);
