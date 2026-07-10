@@ -77,6 +77,7 @@ pub(crate) struct WindowState {
     pub(crate) resizable: bool,
     pub(crate) maximized: bool,
     pub(crate) fullscreen: Option<Fullscreen>,
+    pub(crate) decorated: bool,
     pub(crate) has_focus: bool,
     pub(crate) modifiers: ModifiersState,
     pub(crate) held_key_press: Option<PhysicalKey>,
@@ -144,6 +145,7 @@ impl UnownedWindow {
         let fullscreen = effective_fullscreen(attributes.fullscreen);
         let fullscreened = fullscreen.is_some();
         let maximized = attributes.maximized && !fullscreened;
+        let decorated = attributes.decorations;
 
         let mut builder = gtk4::ApplicationWindow::builder()
             .application(&app)
@@ -151,7 +153,7 @@ impl UnownedWindow {
             .default_width(surface_size.width as i32)
             .default_height(surface_size.height as i32)
             .resizable(attributes.resizable)
-            .decorated(attributes.decorations)
+            .decorated(decorated)
             // GTK only exposes the close button through the native toplevel API.
             // Minimize/maximize hints require taking over the titlebar, so winit-gtk4 leaves them
             // to the compositor/window manager.
@@ -205,6 +207,7 @@ impl UnownedWindow {
             resizable,
             maximized,
             fullscreen: fullscreen.clone(),
+            decorated,
             has_focus: false,
             modifiers: ModifiersState::default(),
             held_key_press: None,
@@ -279,6 +282,7 @@ impl UnownedWindow {
         Self::connect_surface_events(event_loop, gtk_window, window.clone(), surface_attributes);
         Self::connect_maximized(gtk_window, window.clone());
         Self::connect_fullscreen(gtk_window, window.clone());
+        Self::connect_decorated(gtk_window, window.clone());
         Self::connect_theme(event_loop, gtk_window, window.clone());
         dnd::connect(event_loop, gtk_window, window.clone());
         keyboards::connect(event_loop, gtk_window, window.clone());
@@ -398,6 +402,16 @@ impl UnownedWindow {
             } else {
                 state.fullscreen = None;
             }
+        });
+    }
+
+    fn connect_decorated(gtk_window: &gtk4::ApplicationWindow, window: Weak<UnownedWindow>) {
+        gtk_window.connect_decorated_notify(move |gtk_window| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
+            window.state.lock().unwrap().decorated = gtk_window.is_decorated();
         });
     }
 
@@ -882,12 +896,13 @@ impl CoreWindow for Window {
         self.state.lock().unwrap().fullscreen.clone()
     }
 
-    fn set_decorations(&self, _decorations: bool) {
-        todo!("GTK4 set_decorations is not implemented yet")
+    fn set_decorations(&self, decorations: bool) {
+        self.state.lock().unwrap().decorated = decorations;
+        self.queue_command(WindowCommand::SetDecorated(decorations));
     }
 
     fn is_decorated(&self) -> bool {
-        todo!("GTK4 is_decorated is not implemented yet")
+        self.state.lock().unwrap().decorated
     }
 
     fn set_window_level(&self, level: WindowLevel) {
@@ -1004,6 +1019,7 @@ pub(crate) enum WindowCommand {
     SetVisible(bool),
     SetResizable(bool),
     SetFullscreen(Option<Fullscreen>),
+    SetDecorated(bool),
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
 }
@@ -1032,6 +1048,7 @@ impl WindowCommand {
             WindowCommand::SetVisible(visible) => window.gtk_window.set_visible(visible),
             WindowCommand::SetResizable(resizable) => window.gtk_window.set_resizable(resizable),
             WindowCommand::SetFullscreen(fullscreen) => window.set_fullscreen(fullscreen.as_ref()),
+            WindowCommand::SetDecorated(decorated) => window.gtk_window.set_decorated(decorated),
             WindowCommand::SetWindowLevel(level) => {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
                     xwindow.set_window_level(level);
