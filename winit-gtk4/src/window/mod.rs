@@ -19,7 +19,7 @@ use winit_core::window::{
     WindowLevel,
 };
 
-use crate::cursor::GtkCustomCursor;
+use crate::cursor::{GtkCustomCursor, invisible_cursor};
 use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle, SharedState};
 use crate::sink::CommandSink;
 
@@ -87,6 +87,8 @@ pub(crate) struct WindowState {
     pub(crate) theme: Option<Theme>,
     pub(crate) title: String,
     pub(crate) window_level: WindowLevel,
+    pub(crate) cursor: Cursor,
+    pub(crate) cursor_visible: bool,
 }
 
 impl fmt::Debug for UnownedWindow {
@@ -150,6 +152,7 @@ impl UnownedWindow {
         let maximized = attributes.maximized && !fullscreened;
         let decorated = attributes.decorations;
         let enabled_buttons = attributes.enabled_buttons;
+        let cursor = attributes.cursor.clone();
 
         let mut builder = gtk4::ApplicationWindow::builder()
             .application(&app)
@@ -172,11 +175,7 @@ impl UnownedWindow {
             builder = builder.width_request(width).height_request(height);
         }
 
-        let initial_cursor = match attributes.cursor {
-            Cursor::Icon(cursor_icon) => gdk_cursor_from_icon(cursor_icon),
-            // TODO: Support GTK-backed custom cursors
-            Cursor::Custom(_) => None,
-        };
+        let initial_cursor = gdk_cursor_from_cursor(&cursor);
         if let Some(cursor) = initial_cursor.as_ref() {
             builder = builder.cursor(cursor);
         }
@@ -220,6 +219,8 @@ impl UnownedWindow {
             theme,
             title,
             window_level,
+            cursor,
+            cursor_visible: true,
         };
         let state = Arc::new(Mutex::new(state));
 
@@ -720,6 +721,12 @@ impl UnownedWindow {
         }
     }
 
+    fn set_cursor(&self, cursor: Cursor) {
+        if let Some(cursor) = gdk_cursor_from_cursor(&cursor) {
+            self.gtk_window.set_cursor(Some(&cursor));
+        }
+    }
+
     fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
         self.xwindow().as_ref().and_then(|xwindow| xwindow.inner_position())
     }
@@ -992,6 +999,7 @@ impl CoreWindow for Window {
     }
 
     fn set_cursor(&self, cursor: Cursor) {
+        self.state.lock().unwrap().cursor = cursor.clone();
         self.queue_command(WindowCommand::SetCursor(cursor));
     }
 
@@ -1003,8 +1011,9 @@ impl CoreWindow for Window {
         todo!("GTK4 set_cursor_grab is not implemented yet")
     }
 
-    fn set_cursor_visible(&self, _visible: bool) {
-        todo!("GTK4 set_cursor_visible is not implemented yet")
+    fn set_cursor_visible(&self, visible: bool) {
+        self.state.lock().unwrap().cursor_visible = visible;
+        self.queue_command(WindowCommand::SetCursorVisible(visible));
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
@@ -1063,6 +1072,7 @@ pub(crate) enum WindowCommand {
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
     SetCursor(Cursor),
+    SetCursorVisible(bool),
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
 }
@@ -1120,15 +1130,20 @@ impl WindowCommand {
             WindowCommand::SetWindowIcon(icon) => {
                 window.set_window_icon(icon.as_ref().and_then(|icon| icon.cast_ref()));
             },
-            WindowCommand::SetCursor(cursor) => match cursor {
-                Cursor::Icon(cursor_icon) => {
-                    window.gtk_window.set_cursor(gdk_cursor_from_icon(cursor_icon).as_ref());
-                },
-                Cursor::Custom(cursor) => {
-                    if let Some(cursor) = cursor.cast_ref::<GtkCustomCursor>() {
-                        window.gtk_window.set_cursor(Some(&cursor.cursor()));
-                    }
-                },
+            WindowCommand::SetCursor(cursor) => {
+                if window.state.lock().unwrap().cursor_visible {
+                    window.set_cursor(cursor);
+                } else {
+                    window.gtk_window.set_cursor(Some(&invisible_cursor()));
+                }
+            },
+            WindowCommand::SetCursorVisible(visible) => {
+                if visible {
+                    let cursor = window.state.lock().unwrap().cursor.clone();
+                    window.set_cursor(cursor);
+                } else {
+                    window.gtk_window.set_cursor(Some(&invisible_cursor()));
+                }
             },
             WindowCommand::FocusWindow => {
                 if let Some(toplevel) = window
@@ -1170,6 +1185,13 @@ fn gdk_cursor_from_icon(cursor_icon: CursorIcon) -> Option<gtk4::gdk::Cursor> {
     gtk4::gdk::Cursor::from_name(cursor_icon.name(), None).or_else(|| {
         cursor_icon.alt_names().iter().find_map(|name| gtk4::gdk::Cursor::from_name(name, None))
     })
+}
+
+fn gdk_cursor_from_cursor(cursor: &Cursor) -> Option<gtk4::gdk::Cursor> {
+    match cursor {
+        Cursor::Icon(cursor_icon) => gdk_cursor_from_icon(*cursor_icon),
+        Cursor::Custom(cursor) => cursor.cast_ref::<GtkCustomCursor>().map(GtkCustomCursor::cursor),
+    }
 }
 
 fn gdk_texture_from_icon(icon: &RgbaIcon) -> gtk4::gdk::Texture {
