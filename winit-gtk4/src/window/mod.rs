@@ -982,14 +982,21 @@ impl CoreWindow for Window {
         self.state.lock().unwrap().theme
     }
 
-    fn set_content_protected(&self, _protected: bool) {}
+    fn set_content_protected(&self, _protected: bool) {
+        // GTK4/GDK does not expose a toplevel API for compositor-level screen capture protection.
+    }
 
     fn title(&self) -> String {
         self.state.lock().unwrap().title.clone()
     }
 
-    fn set_cursor(&self, _cursor: Cursor) {
-        todo!("GTK4 set_cursor is not implemented yet")
+    fn set_cursor(&self, cursor: Cursor) {
+        match cursor {
+            Cursor::Icon(cursor_icon) => {
+                self.queue_command(WindowCommand::SetCursorIcon(cursor_icon))
+            },
+            Cursor::Custom(_) => todo!("GTK4 custom cursors are not implemented yet"),
+        }
     }
 
     fn set_cursor_position(&self, _position: Position) -> Result<(), RequestError> {
@@ -1059,6 +1066,7 @@ pub(crate) enum WindowCommand {
     SetDecorated(bool),
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
+    SetCursorIcon(CursorIcon),
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
 }
@@ -1115,6 +1123,9 @@ impl WindowCommand {
             },
             WindowCommand::SetWindowIcon(icon) => {
                 window.set_window_icon(icon.as_ref().and_then(|icon| icon.cast_ref()));
+            },
+            WindowCommand::SetCursorIcon(cursor_icon) => {
+                window.gtk_window.set_cursor(gdk_cursor_from_icon(cursor_icon).as_ref());
             },
             WindowCommand::FocusWindow => {
                 if let Some(toplevel) = window
