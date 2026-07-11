@@ -89,6 +89,7 @@ pub(crate) struct WindowState {
     pub(crate) window_level: WindowLevel,
     pub(crate) cursor: Cursor,
     pub(crate) cursor_visible: bool,
+    pub(crate) cursor_grab_mode: CursorGrabMode,
 }
 
 impl fmt::Debug for UnownedWindow {
@@ -221,6 +222,7 @@ impl UnownedWindow {
             window_level,
             cursor,
             cursor_visible: true,
+            cursor_grab_mode: CursorGrabMode::None,
         };
         let state = Arc::new(Mutex::new(state));
 
@@ -1017,8 +1019,22 @@ impl CoreWindow for Window {
         Ok(())
     }
 
-    fn set_cursor_grab(&self, _mode: CursorGrabMode) -> Result<(), RequestError> {
-        todo!("GTK4 set_cursor_grab is not implemented yet")
+    fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
+        if self.xwindow().is_none() && mode != CursorGrabMode::None {
+            return Err(NotSupportedError::new(
+                "cursor grabbing is not supported on this GDK backend",
+            )
+            .into());
+        }
+
+        if mode != CursorGrabMode::None && self.state.lock().unwrap().cursor_grab_mode == mode {
+            return Ok(());
+        }
+
+        self.state.lock().unwrap().cursor_grab_mode = mode;
+        self.queue_command(WindowCommand::SetCursorGrab(mode));
+
+        Ok(())
     }
 
     fn set_cursor_visible(&self, visible: bool) {
@@ -1083,6 +1099,7 @@ pub(crate) enum WindowCommand {
     SetWindowIcon(Option<Icon>),
     SetCursor(Cursor),
     SetCursorPosition { position: Position, scale_factor: f64 },
+    SetCursorGrab(CursorGrabMode),
     SetCursorVisible(bool),
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
@@ -1152,6 +1169,11 @@ impl WindowCommand {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
                     let position = position.to_physical::<i32>(scale_factor);
                     let _ = xwindow.set_cursor_position(position);
+                }
+            },
+            WindowCommand::SetCursorGrab(mode) => {
+                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
+                    let _ = xwindow.set_cursor_grab(mode);
                 }
             },
             WindowCommand::SetCursorVisible(visible) => {

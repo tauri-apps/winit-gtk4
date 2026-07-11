@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use dpi::PhysicalPosition;
 use gtk4::prelude::*;
-use winit_core::error::{OsError, RequestError};
-use winit_core::window::WindowLevel;
+use winit_core::error::{NotSupportedError, OsError, RequestError};
+use winit_core::window::{CursorGrabMode, WindowLevel};
 use winit_x11::x11_util;
 use x11_util::{AtomName, StateOperation};
 pub(crate) use x11_util::{FrameExtentsHeuristic, XConnection};
@@ -106,6 +106,77 @@ impl GtkXWindow {
             .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))?;
 
         Ok(())
+    }
+
+    pub fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
+        // We don't support the locked cursor yet, so ignore it early on.
+        if mode == CursorGrabMode::Locked {
+            return Err(NotSupportedError::new("locked cursor is not implemented on X11").into());
+        }
+
+        // We ungrab before grabbing to prevent passive grabs from causing `AlreadyGrabbed`.
+        // Therefore, this is common to both codepaths.
+        self.xconn
+            .xcb_connection()
+            .ungrab_pointer(x11rb::CURRENT_TIME)
+            .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))?;
+
+        let result = match mode {
+            CursorGrabMode::None => self
+                .xconn
+                .flush_requests()
+                .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err))),
+            CursorGrabMode::Confined => {
+                let result = self
+                    .xconn
+                    .xcb_connection()
+                    .grab_pointer(
+                        true as _,
+                        self.xid,
+                        xproto::EventMask::BUTTON_PRESS
+                            | xproto::EventMask::BUTTON_RELEASE
+                            | xproto::EventMask::ENTER_WINDOW
+                            | xproto::EventMask::LEAVE_WINDOW
+                            | xproto::EventMask::POINTER_MOTION
+                            | xproto::EventMask::POINTER_MOTION_HINT
+                            | xproto::EventMask::BUTTON1_MOTION
+                            | xproto::EventMask::BUTTON2_MOTION
+                            | xproto::EventMask::BUTTON3_MOTION
+                            | xproto::EventMask::BUTTON4_MOTION
+                            | xproto::EventMask::BUTTON5_MOTION
+                            | xproto::EventMask::KEYMAP_STATE,
+                        xproto::GrabMode::ASYNC,
+                        xproto::GrabMode::ASYNC,
+                        self.xid,
+                        0u32,
+                        x11rb::CURRENT_TIME,
+                    )
+                    .expect("Failed to call `grab_pointer`")
+                    .reply()
+                    .expect("Failed to receive reply from `grab_pointer`");
+
+                match result.status {
+                    xproto::GrabStatus::SUCCESS => Ok(()),
+                    xproto::GrabStatus::ALREADY_GRABBED => {
+                        Err("Cursor could not be confined: already confined by another client")
+                    },
+                    xproto::GrabStatus::INVALID_TIME => {
+                        Err("Cursor could not be confined: invalid time")
+                    },
+                    xproto::GrabStatus::NOT_VIEWABLE => {
+                        Err("Cursor could not be confined: confine location not viewable")
+                    },
+                    xproto::GrabStatus::FROZEN => {
+                        Err("Cursor could not be confined: frozen by another client")
+                    },
+                    _ => unreachable!(),
+                }
+                .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))
+            },
+            CursorGrabMode::Locked => return Ok(()),
+        };
+
+        result
     }
 
     pub fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
