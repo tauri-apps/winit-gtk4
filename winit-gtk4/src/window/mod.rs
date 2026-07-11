@@ -967,8 +967,8 @@ impl CoreWindow for Window {
         self.state.lock().unwrap().has_focus
     }
 
-    fn request_user_attention(&self, _request_type: Option<UserAttentionType>) {
-        todo!("GTK4 request_user_attention is not implemented yet")
+    fn request_user_attention(&self, request_type: Option<UserAttentionType>) {
+        self.queue_command(WindowCommand::RequestUserAttention(request_type));
     }
 
     fn set_theme(&self, theme: Option<Theme>) {
@@ -1060,6 +1060,7 @@ pub(crate) enum WindowCommand {
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
     FocusWindow,
+    RequestUserAttention(Option<UserAttentionType>),
 }
 
 impl WindowCommand {
@@ -1122,6 +1123,11 @@ impl WindowCommand {
                     .and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok())
                 {
                     toplevel.focus(0);
+                }
+            },
+            WindowCommand::RequestUserAttention(request_type) => {
+                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
+                    xwindow.request_user_attention(request_type.is_some());
                 }
             },
         }

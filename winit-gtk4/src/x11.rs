@@ -8,7 +8,7 @@ use winit_x11::x11_util;
 use x11_util::{AtomName, StateOperation};
 pub(crate) use x11_util::{FrameExtentsHeuristic, XConnection};
 use x11rb::connection::Connection;
-use x11rb::properties::{WmSizeHints, WmSizeHintsSpecification};
+use x11rb::properties::{WmHints, WmSizeHints, WmSizeHintsSpecification};
 use x11rb::protocol::xproto::{self, ConnectionExt as _};
 use x11rb::x11_utils::Serialize;
 
@@ -112,6 +112,19 @@ impl GtkXWindow {
     pub fn set_window_level(&self, level: WindowLevel) {
         self.toggle_atom(AtomName::_NET_WM_STATE_ABOVE, level == WindowLevel::AlwaysOnTop);
         self.toggle_atom(AtomName::_NET_WM_STATE_BELOW, level == WindowLevel::AlwaysOnBottom);
+
+        let _ = self.xconn.xcb_connection().flush();
+    }
+
+    pub fn request_user_attention(&self, request_attention: bool) {
+        let mut hints = WmHints::get(self.xconn.xcb_connection(), self.xid)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .flatten()
+            .unwrap_or_else(WmHints::new);
+
+        hints.urgent = request_attention;
+        let _ = hints.set(self.xconn.xcb_connection(), self.xid);
 
         let _ = self.xconn.xcb_connection().flush();
     }

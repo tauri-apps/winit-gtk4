@@ -247,7 +247,9 @@ impl EventLoop {
                     dispatched_glib |= self.context.iteration(true);
                 }
 
-                source.remove();
+                if !expired.load(Ordering::Relaxed) {
+                    source.remove();
+                }
                 dispatched_glib |= self.flush_pending_glib_events();
             },
             None => {
