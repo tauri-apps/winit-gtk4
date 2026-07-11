@@ -23,6 +23,7 @@ use winit_core::event_loop::{
 use winit_core::monitor::MonitorHandle;
 use winit_core::window::{Theme, Window as CoreWindow, WindowAttributes, WindowId};
 
+use crate::cursor::GtkCustomCursor;
 use crate::sink::{Command, CommandSink, EventSink};
 use crate::window::{UnownedWindow, Window, WindowCommand, theme_from_settings};
 
@@ -438,9 +439,9 @@ impl CoreActiveEventLoop for ActiveEventLoop {
 
     fn create_custom_cursor(
         &self,
-        _custom_cursor: CustomCursorSource,
+        custom_cursor: CustomCursorSource,
     ) -> Result<CoreCustomCursor, RequestError> {
-        todo!("GTK4 custom cursors are not implemented yet")
+        Ok(CoreCustomCursor(Arc::new(GtkCustomCursor::new(custom_cursor)?)))
     }
 
     fn available_monitors(&self) -> Box<dyn Iterator<Item = MonitorHandle>> {
