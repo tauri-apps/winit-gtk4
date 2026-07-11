@@ -1003,8 +1003,18 @@ impl CoreWindow for Window {
         self.queue_command(WindowCommand::SetCursor(cursor));
     }
 
-    fn set_cursor_position(&self, _position: Position) -> Result<(), RequestError> {
-        todo!("GTK4 set_cursor_position is not implemented yet")
+    fn set_cursor_position(&self, position: Position) -> Result<(), RequestError> {
+        let scale_factor = self.state.lock().unwrap().scale_factor;
+
+        if self.xwindow().is_none() {
+            return Err(NotSupportedError::new(
+                "cursor positioning is not supported on this GDK backend",
+            )
+            .into());
+        }
+
+        self.queue_command(WindowCommand::SetCursorPosition { position, scale_factor });
+        Ok(())
     }
 
     fn set_cursor_grab(&self, _mode: CursorGrabMode) -> Result<(), RequestError> {
@@ -1072,6 +1082,7 @@ pub(crate) enum WindowCommand {
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
     SetCursor(Cursor),
+    SetCursorPosition { position: Position, scale_factor: f64 },
     SetCursorVisible(bool),
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
@@ -1135,6 +1146,12 @@ impl WindowCommand {
                     window.set_cursor(cursor);
                 } else {
                     window.gtk_window.set_cursor(Some(&invisible_cursor()));
+                }
+            },
+            WindowCommand::SetCursorPosition { position, scale_factor } => {
+                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
+                    let position = position.to_physical::<i32>(scale_factor);
+                    let _ = xwindow.set_cursor_position(position);
                 }
             },
             WindowCommand::SetCursorVisible(visible) => {
