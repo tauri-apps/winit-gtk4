@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use dpi::PhysicalPosition;
 use gtk4::prelude::*;
+use winit_core::error::{OsError, RequestError};
 use winit_core::window::WindowLevel;
 use winit_x11::x11_util;
 use x11_util::{AtomName, StateOperation};
@@ -90,6 +91,21 @@ impl GtkXWindow {
         let _ = self.xconn.xcb_connection().configure_window(self.xid, &configure);
 
         let _ = self.xconn.xcb_connection().flush();
+    }
+
+    pub fn set_cursor_position(&self, position: PhysicalPosition<i32>) -> Result<(), RequestError> {
+        let x = position.x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let y = position.y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+
+        self.xconn
+            .xcb_connection()
+            .warp_pointer(x11rb::NONE, self.xid, 0, 0, 0, 0, x, y)
+            .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))?;
+        self.xconn
+            .flush_requests()
+            .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))?;
+
+        Ok(())
     }
 
     pub fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
