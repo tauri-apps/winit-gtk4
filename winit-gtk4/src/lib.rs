@@ -1,5 +1,6 @@
 //! Winit's GTK4 backend.
 
+mod cursor;
 mod event_loop;
 mod monitor;
 mod sink;

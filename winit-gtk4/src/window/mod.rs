@@ -19,6 +19,7 @@ use winit_core::window::{
     WindowLevel,
 };
 
+use crate::cursor::GtkCustomCursor;
 use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle, SharedState};
 use crate::sink::CommandSink;
 
@@ -991,12 +992,7 @@ impl CoreWindow for Window {
     }
 
     fn set_cursor(&self, cursor: Cursor) {
-        match cursor {
-            Cursor::Icon(cursor_icon) => {
-                self.queue_command(WindowCommand::SetCursorIcon(cursor_icon))
-            },
-            Cursor::Custom(_) => todo!("GTK4 custom cursors are not implemented yet"),
-        }
+        self.queue_command(WindowCommand::SetCursor(cursor));
     }
 
     fn set_cursor_position(&self, _position: Position) -> Result<(), RequestError> {
@@ -1066,7 +1062,7 @@ pub(crate) enum WindowCommand {
     SetDecorated(bool),
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
-    SetCursorIcon(CursorIcon),
+    SetCursor(Cursor),
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
 }
@@ -1124,8 +1120,15 @@ impl WindowCommand {
             WindowCommand::SetWindowIcon(icon) => {
                 window.set_window_icon(icon.as_ref().and_then(|icon| icon.cast_ref()));
             },
-            WindowCommand::SetCursorIcon(cursor_icon) => {
-                window.gtk_window.set_cursor(gdk_cursor_from_icon(cursor_icon).as_ref());
+            WindowCommand::SetCursor(cursor) => match cursor {
+                Cursor::Icon(cursor_icon) => {
+                    window.gtk_window.set_cursor(gdk_cursor_from_icon(cursor_icon).as_ref());
+                },
+                Cursor::Custom(cursor) => {
+                    if let Some(cursor) = cursor.cast_ref::<GtkCustomCursor>() {
+                        window.gtk_window.set_cursor(Some(&cursor.cursor()));
+                    }
+                },
             },
             WindowCommand::FocusWindow => {
                 if let Some(toplevel) = window
