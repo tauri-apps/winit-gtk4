@@ -729,6 +729,20 @@ impl UnownedWindow {
         }
     }
 
+    fn set_cursor_hittest(&self, hittest: bool) {
+        let Some(surface) = self.gtk_window.surface() else {
+            return;
+        };
+
+        if hittest {
+            surface.set_input_region(None);
+        } else {
+            let region = gtk4::cairo::Region::create();
+            surface.set_input_region(Some(&region));
+        }
+        surface.queue_render();
+    }
+
     fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
         self.xwindow().as_ref().and_then(|xwindow| xwindow.inner_position())
     }
@@ -1054,8 +1068,19 @@ impl CoreWindow for Window {
         todo!("GTK4 show_window_menu is not implemented yet")
     }
 
-    fn set_cursor_hittest(&self, _hittest: bool) -> Result<(), RequestError> {
-        todo!("GTK4 set_cursor_hittest is not implemented yet")
+    fn set_cursor_hittest(&self, hittest: bool) -> Result<(), RequestError> {
+        if let Some(surface) = self.gtk_window.surface()
+            && !surface.display().supports_input_shapes()
+        {
+            return Err(NotSupportedError::new(
+                "cursor hit testing is not supported on this GDK backend",
+            )
+            .into());
+        }
+
+        self.queue_command(WindowCommand::SetCursorHittest(hittest));
+
+        Ok(())
     }
 
     fn current_monitor(&self) -> Option<MonitorHandle> {
@@ -1101,6 +1126,7 @@ pub(crate) enum WindowCommand {
     SetCursorPosition { position: Position, scale_factor: f64 },
     SetCursorGrab(CursorGrabMode),
     SetCursorVisible(bool),
+    SetCursorHittest(bool),
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
 }
@@ -1108,7 +1134,11 @@ pub(crate) enum WindowCommand {
 impl WindowCommand {
     pub(crate) fn apply_to(self, window: &UnownedWindow) {
         match self {
-            WindowCommand::RequestRedraw => { /* Handled in event_loop.rs */ },
+            WindowCommand::RequestRedraw => {
+                if let Some(surface) = window.gtk_window.surface() {
+                    surface.queue_render();
+                }
+            },
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
                 let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
                 window.gtk_window.set_default_size(width, height);
@@ -1184,6 +1214,7 @@ impl WindowCommand {
                     window.gtk_window.set_cursor(Some(&invisible_cursor()));
                 }
             },
+            WindowCommand::SetCursorHittest(hittest) => window.set_cursor_hittest(hittest),
             WindowCommand::FocusWindow => {
                 if let Some(toplevel) = window
                     .gtk_window
