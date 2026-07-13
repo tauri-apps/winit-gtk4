@@ -376,6 +376,12 @@ impl winit_gtk4::EventLoopBuilderExtGtk4 for EventLoopBuilder {
     }
 
     #[inline]
+    fn with_any_thread(&mut self, any_thread: bool) -> &mut Self {
+        self.platform_specific.any_thread = any_thread;
+        self
+    }
+
+    #[inline]
     fn with_application_id(&mut self, application_id: String) -> &mut Self {
         self.platform_specific.gtk4.application_id = Some(application_id);
         self

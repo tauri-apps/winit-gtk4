@@ -93,8 +93,9 @@ impl EventLoop {
                 "Initializing the event loop outside of the main thread is a significant \
                  cross-platform compatibility hazard. If you absolutely need to create an \
                  EventLoop on a different thread, you can use the \
-                 `EventLoopBuilderExtX11::with_any_thread` or \
-                 `EventLoopBuilderExtWayland::with_any_thread` functions."
+                 `EventLoopBuilderExtX11::with_any_thread`, \
+                 `EventLoopBuilderExtWayland::with_any_thread`, or \
+                 `EventLoopBuilderExtGtk4::with_any_thread` functions."
             );
         }
 
