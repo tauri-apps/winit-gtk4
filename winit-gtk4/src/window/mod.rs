@@ -756,6 +756,31 @@ impl UnownedWindow {
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
+        let (toplevel, press) = self.drag_toplevel_and_press()?;
+
+        toplevel.begin_move(&press.device, press.button, press.x, press.y, press.timestamp);
+        Ok(())
+    }
+
+    fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), RequestError> {
+        let (toplevel, press) = self.drag_toplevel_and_press()?;
+
+        let edge = resize_direction_to_gdk_edge(direction);
+
+        toplevel.begin_resize(
+            edge,
+            Some(&press.device),
+            press.button,
+            press.x,
+            press.y,
+            press.timestamp,
+        );
+        Ok(())
+    }
+
+    fn drag_toplevel_and_press(
+        &self,
+    ) -> Result<(gtk4::gdk::Toplevel, PointerButtonPress), RequestError> {
         let surface = self.gtk_window.surface();
         let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
         let Some(toplevel) = toplevel else {
@@ -768,8 +793,7 @@ impl UnownedWindow {
             return Err(e.into());
         };
 
-        toplevel.begin_move(&press.device, press.button, press.x, press.y, press.timestamp);
-        Ok(())
+        Ok((toplevel, press))
     }
 
     fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
@@ -1095,8 +1119,14 @@ impl CoreWindow for Window {
         Ok(())
     }
 
-    fn drag_resize_window(&self, _direction: ResizeDirection) -> Result<(), RequestError> {
-        todo!("GTK4 drag_resize_window is not implemented yet")
+    fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), RequestError> {
+        if self.last_pointer_button_press.lock().unwrap().is_none() {
+            let e = NotSupportedError::new("window resizing requires a pointer button press");
+            return Err(e.into());
+        }
+
+        self.queue_command(WindowCommand::DragResizeWindow(direction));
+        Ok(())
     }
 
     fn show_window_menu(&self, _position: Position) {
@@ -1163,6 +1193,7 @@ pub(crate) enum WindowCommand {
     SetCursorVisible(bool),
     SetCursorHittest(bool),
     DragWindow,
+    DragResizeWindow(ResizeDirection),
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
 }
@@ -1252,6 +1283,7 @@ impl WindowCommand {
             },
             WindowCommand::SetCursorHittest(hittest) => window.set_cursor_hittest(hittest),
             WindowCommand::DragWindow => _ = window.drag_window(),
+            WindowCommand::DragResizeWindow(direction) => _ = window.drag_resize_window(direction),
             WindowCommand::FocusWindow => {
                 if let Some(toplevel) = window
                     .gtk_window
@@ -1298,6 +1330,19 @@ fn gdk_cursor_from_cursor(cursor: &Cursor) -> Option<gtk4::gdk::Cursor> {
     match cursor {
         Cursor::Icon(cursor_icon) => gdk_cursor_from_icon(*cursor_icon),
         Cursor::Custom(cursor) => cursor.cast_ref::<GtkCustomCursor>().map(GtkCustomCursor::cursor),
+    }
+}
+
+fn resize_direction_to_gdk_edge(direction: ResizeDirection) -> gtk4::gdk::SurfaceEdge {
+    match direction {
+        ResizeDirection::East => gtk4::gdk::SurfaceEdge::East,
+        ResizeDirection::North => gtk4::gdk::SurfaceEdge::North,
+        ResizeDirection::NorthEast => gtk4::gdk::SurfaceEdge::NorthEast,
+        ResizeDirection::NorthWest => gtk4::gdk::SurfaceEdge::NorthWest,
+        ResizeDirection::South => gtk4::gdk::SurfaceEdge::South,
+        ResizeDirection::SouthEast => gtk4::gdk::SurfaceEdge::SouthEast,
+        ResizeDirection::SouthWest => gtk4::gdk::SurfaceEdge::SouthWest,
+        ResizeDirection::West => gtk4::gdk::SurfaceEdge::West,
     }
 }
 
