@@ -552,7 +552,7 @@ impl UnownedWindow {
             logical_size.to_physical(scale_factor)
         };
 
-        // Push inital scale factor event
+        // Push initial scale factor event
         {
             let mut shared = shared.borrow_mut();
             shared.events_sink.push_scale_factor_changed(

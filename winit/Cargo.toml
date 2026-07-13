@@ -43,6 +43,7 @@ default = ["x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"]
 
 android-game-activity = ["winit-android/game-activity"]
 android-native-activity = ["winit-android/native-activity"]
+gtk4 = ["winit-gtk4"]
 mint = ["dpi/mint"]
 serde = [
     "dep:serde",
@@ -60,7 +61,6 @@ wayland-csd-adwaita-notitle = ["winit-wayland/csd-adwaita-notitle"]
 wayland-csd-adwaita-notitlebar = ["winit-wayland/csd-adwaita-notitlebar"]
 wayland-dlopen = ["winit-wayland/dlopen"]
 x11 = ["winit-x11", "winit-common"]
-gtk4 = ["winit-gtk4"]
 
 [build-dependencies]
 cfg_aliases.workspace = true
