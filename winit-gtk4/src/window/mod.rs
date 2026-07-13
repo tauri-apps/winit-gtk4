@@ -790,9 +790,7 @@ impl UnownedWindow {
         surface.queue_render();
     }
 
-    fn request_redraw(&self) {
-        self.state.lock().unwrap().redraw_requested = true;
-
+    fn schedule_redraw(&self) {
         if let Some(frame_clock) = self.gtk_window.frame_clock() {
             frame_clock.request_phase(gtk4::gdk::FrameClockPhase::UPDATE);
         }
@@ -800,6 +798,16 @@ impl UnownedWindow {
         if let Some(surface) = self.gtk_window.surface() {
             surface.queue_render();
         }
+    }
+
+    fn mark_redraw_requested(&self) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.redraw_requested {
+            return false;
+        }
+
+        state.redraw_requested = true;
+        true
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
@@ -930,7 +938,9 @@ impl CoreWindow for Window {
     }
 
     fn request_redraw(&self) {
-        self.queue_command(WindowCommand::RequestRedraw);
+        if self.mark_redraw_requested() {
+            self.queue_command(WindowCommand::RequestRedraw);
+        }
     }
 
     fn pre_present_notify(&self) {}
@@ -1267,7 +1277,7 @@ pub(crate) enum WindowCommand {
 impl WindowCommand {
     pub(crate) fn apply_to(self, window: &UnownedWindow) {
         match self {
-            WindowCommand::RequestRedraw => window.request_redraw(),
+            WindowCommand::RequestRedraw => window.schedule_redraw(),
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
                 let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
                 window.gtk_window.set_default_size(width, height);
