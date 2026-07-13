@@ -757,33 +757,34 @@ impl UnownedWindow {
         surface.queue_render();
     }
 
-    fn last_pointer_button_press(&self) -> Result<PointerButtonPress, RequestError> {
+    fn drag_window(&self) -> Result<(), RequestError> {
+        let surface = self.gtk_window.surface();
+        let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
+        let Some(toplevel) = toplevel else {
+            let e = NotSupportedError::new("window dragging is not supported on this GDK surface");
+            return Err(e.into());
+        };
+
         let Some(press) = self.last_pointer_button_press.lock().unwrap().clone() else {
             let e = NotSupportedError::new("window dragging requires a pointer button press");
             return Err(e.into());
         };
-        Ok(press)
-    }
-
-    fn gtk_top_level(&self) -> Result<gtk4::gdk::Toplevel, RequestError> {
-        let surface = self.gtk_window.surface();
-        let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
-        toplevel.ok_or_else(|| {
-            NotSupportedError::new("window dragging is not supported on this GDK surface").into()
-        })
-    }
-
-    fn drag_window(&self) -> Result<(), RequestError> {
-        let toplevel = self.gtk_top_level()?;
-        let press = self.last_pointer_button_press()?;
-
         toplevel.begin_move(&press.device, press.button, press.x, press.y, press.timestamp);
         Ok(())
     }
 
     fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), RequestError> {
-        let toplevel = self.gtk_top_level()?;
-        let press = self.last_pointer_button_press()?;
+        let surface = self.gtk_window.surface();
+        let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
+        let Some(toplevel) = toplevel else {
+            let e = "window resize dragging is not supported on this GDK surface";
+            return Err(NotSupportedError::new(e).into());
+        };
+
+        let Some(press) = self.last_pointer_button_press.lock().unwrap().clone() else {
+            let e = "window resize dragging requires a pointer button press";
+            return Err(NotSupportedError::new(e).into());
+        };
 
         let edge = resize_direction_to_gdk_edge(direction);
 
@@ -799,7 +800,12 @@ impl UnownedWindow {
     }
 
     fn show_window_menu(&self) -> Result<(), RequestError> {
-        let toplevel = self.gtk_top_level()?;
+        let surface = self.gtk_window.surface();
+        let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
+        let Some(toplevel) = toplevel else {
+            let e = NotSupportedError::new("window menu is not supported on this GDK surface");
+            return Err(e.into());
+        };
 
         let Some(event) = self.last_pointer_button_event.lock().unwrap().clone() else {
             let e = NotSupportedError::new("window menu requires a pointer button event");
