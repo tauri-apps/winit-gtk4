@@ -53,6 +53,7 @@ pub struct UnownedWindow {
     xwindow: Mutex<Option<crate::x11::GtkXWindow>>,
 
     pub(crate) last_pointer_button_press: Mutex<Option<PointerButtonPress>>,
+    pub(crate) last_pointer_button_event: Mutex<Option<gtk4::gdk::Event>>,
 
     display_handle: OwnedDisplayHandle,
     window_handle: Mutex<Option<rwh_06::RawWindowHandle>>,
@@ -249,6 +250,7 @@ impl UnownedWindow {
             window_handle: Mutex::new(None),
             xwindow: Mutex::new(None),
             last_pointer_button_press: Mutex::new(None),
+            last_pointer_button_event: Mutex::new(None),
             state,
         });
 
@@ -755,15 +757,33 @@ impl UnownedWindow {
         surface.queue_render();
     }
 
+    fn last_pointer_button_press(&self) -> Result<PointerButtonPress, RequestError> {
+        let Some(press) = self.last_pointer_button_press.lock().unwrap().clone() else {
+            let e = NotSupportedError::new("window dragging requires a pointer button press");
+            return Err(e.into());
+        };
+        Ok(press)
+    }
+
+    fn gtk_top_level(&self) -> Result<gtk4::gdk::Toplevel, RequestError> {
+        let surface = self.gtk_window.surface();
+        let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
+        toplevel.ok_or_else(|| {
+            NotSupportedError::new("window dragging is not supported on this GDK surface").into()
+        })
+    }
+
     fn drag_window(&self) -> Result<(), RequestError> {
-        let (toplevel, press) = self.drag_toplevel_and_press()?;
+        let toplevel = self.gtk_top_level()?;
+        let press = self.last_pointer_button_press()?;
 
         toplevel.begin_move(&press.device, press.button, press.x, press.y, press.timestamp);
         Ok(())
     }
 
     fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), RequestError> {
-        let (toplevel, press) = self.drag_toplevel_and_press()?;
+        let toplevel = self.gtk_top_level()?;
+        let press = self.last_pointer_button_press()?;
 
         let edge = resize_direction_to_gdk_edge(direction);
 
@@ -778,22 +798,16 @@ impl UnownedWindow {
         Ok(())
     }
 
-    fn drag_toplevel_and_press(
-        &self,
-    ) -> Result<(gtk4::gdk::Toplevel, PointerButtonPress), RequestError> {
-        let surface = self.gtk_window.surface();
-        let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
-        let Some(toplevel) = toplevel else {
-            let e = NotSupportedError::new("window dragging is not supported on this GDK surface");
+    fn show_window_menu(&self) -> Result<(), RequestError> {
+        let toplevel = self.gtk_top_level()?;
+
+        let Some(event) = self.last_pointer_button_event.lock().unwrap().clone() else {
+            let e = NotSupportedError::new("window menu requires a pointer button event");
             return Err(e.into());
         };
 
-        let Some(press) = self.last_pointer_button_press.lock().unwrap().clone() else {
-            let e = NotSupportedError::new("window dragging requires a pointer button press");
-            return Err(e.into());
-        };
-
-        Ok((toplevel, press))
+        let _ = toplevel.show_window_menu(event);
+        Ok(())
     }
 
     fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
@@ -1130,7 +1144,7 @@ impl CoreWindow for Window {
     }
 
     fn show_window_menu(&self, _position: Position) {
-        todo!("GTK4 show_window_menu is not implemented yet")
+        self.queue_command(WindowCommand::ShowWindowMenu);
     }
 
     fn set_cursor_hittest(&self, hittest: bool) -> Result<(), RequestError> {
@@ -1194,6 +1208,7 @@ pub(crate) enum WindowCommand {
     SetCursorHittest(bool),
     DragWindow,
     DragResizeWindow(ResizeDirection),
+    ShowWindowMenu,
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
 }
@@ -1284,6 +1299,7 @@ impl WindowCommand {
             WindowCommand::SetCursorHittest(hittest) => window.set_cursor_hittest(hittest),
             WindowCommand::DragWindow => _ = window.drag_window(),
             WindowCommand::DragResizeWindow(direction) => _ = window.drag_resize_window(direction),
+            WindowCommand::ShowWindowMenu => _ = window.show_window_menu(),
             WindowCommand::FocusWindow => {
                 if let Some(toplevel) = window
                     .gtk_window
