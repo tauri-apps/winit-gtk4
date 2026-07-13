@@ -53,9 +53,11 @@ pub(crate) fn connect(
                     None::<&gtk4::gio::Cancellable>,
                     move |result| {
                         let Ok(value) = result else {
+                            drag_state.borrow_mut().ignore(serial);
                             return;
                         };
                         let Some(paths) = paths_from_value(&value) else {
+                            drag_state.borrow_mut().ignore(serial);
                             return;
                         };
 
@@ -218,6 +220,12 @@ impl DragState {
         }
 
         self.position = Some(position);
+    }
+
+    fn ignore(&mut self, serial: u64) {
+        if self.active && self.serial == serial && !self.has_entered {
+            self.reset();
+        }
     }
 
     fn reset(&mut self) {
