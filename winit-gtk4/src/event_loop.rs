@@ -156,6 +156,8 @@ impl EventLoop {
             gtk4::gio::ApplicationFlags::NON_UNIQUE
         };
 
+        gtk4::init().map_err(|err| EventLoopError::Os(OsError::new(line!(), file!(), err)))?;
+
         let app = gtk4::Application::new(application_id, flags);
         app.connect_activate(|_| {});
         app.register(None::<&gtk4::gio::Cancellable>)
