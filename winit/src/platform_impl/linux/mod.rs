@@ -226,7 +226,12 @@ impl AsFd for EventLoop {
             #[cfg(wayland_platform)]
             EventLoop::Wayland(evlp) => evlp.as_fd(),
             #[cfg(gtk4_platform)]
-            EventLoop::Gtk4(_) => todo!("GTK4 event-loop file descriptors are not implemented yet"),
+            EventLoop::Gtk4(_) => {
+                panic!(
+                    "GTK4 EventLoop does not support AsFd: GLib exposes a dynamic poll set, not \
+                     one stable event-loop file descriptor"
+                )
+            },
         }
     }
 }
@@ -240,7 +245,10 @@ impl AsRawFd for EventLoop {
             EventLoop::Wayland(evlp) => evlp.as_raw_fd(),
             #[cfg(gtk4_platform)]
             EventLoop::Gtk4(_) => {
-                todo!("GTK4 event-loop file descriptors are not implemented yet")
+                panic!(
+                    "GTK4 EventLoop does not support AsRawFd: GLib exposes a dynamic poll set, \
+                     not one stable event-loop file descriptor"
+                )
             },
         }
     }
