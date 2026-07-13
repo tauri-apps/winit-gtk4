@@ -25,11 +25,14 @@ jobs:
         with:
           toolchain: nightly
 
+      - name: Install GTK4 dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
+
       - name: Run Rustdoc
         env:
           RUSTDOCFLAGS: --crate-version master --cfg=docsrs --cfg=unreleased_changelogs
         run: |
-          cargo doc --no-deps -Z rustdoc-map -Z rustdoc-scrape-examples --features=serde,mint,android-native-activity
+          cargo doc --no-deps -Z rustdoc-map -Z rustdoc-scrape-examples --features=serde,mint,android-native-activity,gtk4
 
       - name: Setup Pages
         uses: actions/configure-pages@v6
