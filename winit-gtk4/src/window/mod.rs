@@ -52,8 +52,8 @@ pub struct UnownedWindow {
     pub(crate) gtk_window: gtk4::ApplicationWindow,
     xwindow: Mutex<Option<crate::x11::GtkXWindow>>,
 
-    pub(crate) last_pointer_button_press: Mutex<Option<PointerButtonPress>>,
-    pub(crate) last_pointer_button_event: Mutex<Option<gtk4::gdk::Event>>,
+    last_pointer_button_press: Mutex<Option<PointerButtonPress>>,
+    last_pointer_button_event: Mutex<Option<gtk4::gdk::Event>>,
 
     display_handle: OwnedDisplayHandle,
     window_handle: Mutex<Option<rwh_06::RawWindowHandle>>,
@@ -65,11 +65,11 @@ pub struct UnownedWindow {
 
 #[derive(Clone)]
 pub(crate) struct PointerButtonPress {
-    pub(crate) device: gtk4::gdk::Device,
-    pub(crate) button: i32,
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) timestamp: u32,
+    device: gtk4::gdk::Device,
+    button: i32,
+    x: f64,
+    y: f64,
+    timestamp: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -80,28 +80,29 @@ struct InitialSurfaceAttributes {
 
 #[derive(Debug)]
 pub(crate) struct WindowState {
-    pub(crate) surface_size: LogicalSize<u32>,
-    pub(crate) last_layout: Option<PhysicalSize<u32>>,
-    pub(crate) last_position: Option<PhysicalPosition<i32>>,
-    pub(crate) inner_position_rel_parent: Option<PhysicalPosition<i32>>,
-    pub(crate) frame_extents: Option<crate::x11::FrameExtentsHeuristic>,
-    pub(crate) scale_factor: f64,
-    pub(crate) visible: bool,
-    pub(crate) resizable: bool,
-    pub(crate) minimized: bool,
-    pub(crate) maximized: bool,
-    pub(crate) fullscreen: Option<Fullscreen>,
-    pub(crate) decorated: bool,
-    pub(crate) enabled_buttons: WindowButtons,
-    pub(crate) has_focus: bool,
-    pub(crate) modifiers: ModifiersState,
-    pub(crate) held_key_press: Option<PhysicalKey>,
-    pub(crate) theme: Option<Theme>,
-    pub(crate) title: String,
-    pub(crate) window_level: WindowLevel,
-    pub(crate) cursor: Cursor,
-    pub(crate) cursor_visible: bool,
-    pub(crate) cursor_grab_mode: CursorGrabMode,
+    surface_size: LogicalSize<u32>,
+    last_layout: Option<PhysicalSize<u32>>,
+    last_position: Option<PhysicalPosition<i32>>,
+    inner_position_rel_parent: Option<PhysicalPosition<i32>>,
+    frame_extents: Option<crate::x11::FrameExtentsHeuristic>,
+    scale_factor: f64,
+    visible: bool,
+    resizable: bool,
+    minimized: bool,
+    maximized: bool,
+    fullscreen: Option<Fullscreen>,
+    decorated: bool,
+    enabled_buttons: WindowButtons,
+    has_focus: bool,
+    modifiers: ModifiersState,
+    held_key_press: Option<PhysicalKey>,
+    theme: Option<Theme>,
+    title: String,
+    window_level: WindowLevel,
+    cursor: Cursor,
+    cursor_visible: bool,
+    cursor_grab_mode: CursorGrabMode,
+    redraw_requested: bool,
 }
 
 impl fmt::Debug for UnownedWindow {
@@ -235,6 +236,7 @@ impl UnownedWindow {
             cursor,
             cursor_visible: true,
             cursor_grab_mode: CursorGrabMode::None,
+            redraw_requested: false,
         };
         let state = Arc::new(Mutex::new(state));
 
@@ -267,6 +269,7 @@ impl UnownedWindow {
         // Realize before `present()` so that X11-only initial state, such as
         // position and window level, can be applied before the window is shown.
         WidgetExt::realize(&window.gtk_window);
+        Self::connect_redraw(event_loop, &window.gtk_window, window.id(), Arc::downgrade(&window));
 
         let window_handle = raw_window_handle(&window.gtk_window);
         *window.window_handle.lock().unwrap() = window_handle;
@@ -311,6 +314,36 @@ impl UnownedWindow {
         keyboards::connect(event_loop, gtk_window, window.clone());
         pointers::connect(event_loop, gtk_window, window.clone());
         touches::connect(event_loop, gtk_window, window);
+    }
+
+    fn connect_redraw(
+        event_loop: &ActiveEventLoop,
+        gtk_window: &gtk4::ApplicationWindow,
+        window_id: WindowId,
+        window: Weak<UnownedWindow>,
+    ) {
+        let Some(frame_clock) = gtk_window.frame_clock() else {
+            return;
+        };
+
+        let shared = event_loop.shared.clone();
+        frame_clock.connect_update(move |_| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+
+            let redraw_requested = {
+                let mut state = window.state.lock().unwrap();
+                let redraw_requested = state.redraw_requested;
+                state.redraw_requested = false;
+                redraw_requested
+            };
+
+            if redraw_requested {
+                let mut shared = shared.borrow_mut();
+                shared.events_sink.push_window_event(WindowEvent::RedrawRequested, window_id);
+            }
+        });
     }
 
     fn connect_close_request(
@@ -755,6 +788,18 @@ impl UnownedWindow {
             surface.set_input_region(Some(&region));
         }
         surface.queue_render();
+    }
+
+    fn request_redraw(&self) {
+        self.state.lock().unwrap().redraw_requested = true;
+
+        if let Some(frame_clock) = self.gtk_window.frame_clock() {
+            frame_clock.request_phase(gtk4::gdk::FrameClockPhase::UPDATE);
+        }
+
+        if let Some(surface) = self.gtk_window.surface() {
+            surface.queue_render();
+        }
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
@@ -1222,11 +1267,7 @@ pub(crate) enum WindowCommand {
 impl WindowCommand {
     pub(crate) fn apply_to(self, window: &UnownedWindow) {
         match self {
-            WindowCommand::RequestRedraw => {
-                if let Some(surface) = window.gtk_window.surface() {
-                    surface.queue_render();
-                }
-            },
+            WindowCommand::RequestRedraw => window.request_redraw(),
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
                 let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
                 window.gtk_window.set_default_size(width, height);

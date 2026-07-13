@@ -25,7 +25,7 @@ use winit_core::window::{Theme, Window as CoreWindow, WindowAttributes, WindowId
 
 use crate::cursor::GtkCustomCursor;
 use crate::sink::{Command, CommandSink, EventSink};
-use crate::window::{UnownedWindow, Window, WindowCommand, theme_from_settings};
+use crate::window::{UnownedWindow, Window, theme_from_settings};
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -323,18 +323,7 @@ impl EventLoop {
                         continue;
                     };
 
-                    match command {
-                        WindowCommand::RequestRedraw => {
-                            command.apply_to(&window);
-
-                            app.window_event(
-                                &self.active_event_loop,
-                                window_id,
-                                WindowEvent::RedrawRequested,
-                            );
-                        },
-                        command => command.apply_to(&window),
-                    }
+                    command.apply_to(&window);
                 },
                 Command::CloseWindow(window) => window.close(),
             }
