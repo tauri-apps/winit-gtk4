@@ -35,6 +35,16 @@ const TRANSPARENT_WINDOW_CSS: &str = r#"
 }
 "#;
 
+/// GTK4-backed winit window.
+///
+/// The window owns a [`gtk4::ApplicationWindow`] and translates GTK/GDK events
+/// into winit window events. Access to the underlying GTK object is available
+/// through [`WindowExtGtk4`](crate::WindowExtGtk4); callers must follow GTK's
+/// thread and main-context rules when using it.
+///
+/// Raw window handles are captured after GTK realizes the window surface. The
+/// handle reflects the active GDK backend, currently Wayland or X11, and can be
+/// unavailable if GTK has not provided a surface.
 #[derive(Debug)]
 pub struct Window(Arc<UnownedWindow>);
 
