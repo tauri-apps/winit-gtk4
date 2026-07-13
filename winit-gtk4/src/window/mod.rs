@@ -946,7 +946,8 @@ impl CoreWindow for Window {
     fn pre_present_notify(&self) {}
 
     fn reset_dead_keys(&self) {
-        todo!("GTK4 dead-key reset is not implemented yet")
+        // GTK4 key input currently comes from GDK keyvals, not winit_common's xkb compose state.
+        // There is no backend-neutral GTK/GDK API to reset GDK's dead-key compose state.
     }
 
     fn surface_position(&self) -> PhysicalPosition<i32> {
