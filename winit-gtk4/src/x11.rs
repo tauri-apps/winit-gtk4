@@ -151,9 +151,9 @@ impl GtkXWindow {
                         0u32,
                         x11rb::CURRENT_TIME,
                     )
-                    .expect("Failed to call `grab_pointer`")
+                    .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))?
                     .reply()
-                    .expect("Failed to receive reply from `grab_pointer`");
+                    .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))?;
 
                 match result.status {
                     xproto::GrabStatus::SUCCESS => Ok(()),
@@ -169,7 +169,13 @@ impl GtkXWindow {
                     xproto::GrabStatus::FROZEN => {
                         Err("Cursor could not be confined: frozen by another client")
                     },
-                    _ => unreachable!(),
+                    status => {
+                        return Err(RequestError::Os(OsError::new(
+                            line!(),
+                            file!(),
+                            format!("cursor could not be confined: unexpected status {status:?}"),
+                        )));
+                    },
                 }
                 .map_err(|err| RequestError::Os(OsError::new(line!(), file!(), err)))
             },

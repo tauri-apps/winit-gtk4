@@ -444,10 +444,7 @@ impl CoreActiveEventLoop for ActiveEventLoop {
     }
 
     fn listen_device_events(&self, _allowed: DeviceEvents) {
-        todo!(
-            "GTK4 device event listening is not implemented yet, might be possible on X11 but not \
-             on Wayland"
-        )
+        // GTK4/GDK does not expose backend-neutral raw device event capture.
     }
 
     fn system_theme(&self) -> Option<Theme> {
