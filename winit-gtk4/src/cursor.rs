@@ -50,8 +50,7 @@ pub(crate) fn invisible_cursor() -> gtk4::gdk::Cursor {
 
 fn create_invisible_cursor() -> gtk4::gdk::Cursor {
     let bytes = gtk4::glib::Bytes::from_static(&[0, 0, 0, 0]);
-    let texture =
-        gtk4::gdk::MemoryTexture::new(1, 1, gtk4::gdk::MemoryFormat::R8g8b8a8, &bytes, 4);
+    let texture = gtk4::gdk::MemoryTexture::new(1, 1, gtk4::gdk::MemoryFormat::R8g8b8a8, &bytes, 4);
 
     gtk4::gdk::Cursor::from_texture(&texture, 0, 0, None)
 }

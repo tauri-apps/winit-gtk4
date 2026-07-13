@@ -302,8 +302,10 @@ fn pointer_button_event(event: &gtk4::gdk::Event, window: &UnownedWindow) -> Opt
 
     let (x, y) = event.position()?;
 
-    // Store the last pointer button press event in the window state for later use (e.g., for drag_window).
+    // Store the last pointer button press event in the window state for later use (e.g., for
+    // drag_window).
     if state == ElementState::Pressed {
+        *window.last_pointer_button_event.lock().unwrap() = Some(event.clone());
         *window.last_pointer_button_press.lock().unwrap() = Some(PointerButtonPress {
             device: device.clone(),
             button: button_event.button() as i32,
