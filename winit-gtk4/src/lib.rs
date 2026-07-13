@@ -38,6 +38,9 @@ pub trait EventLoopBuilderExtGtk4 {
     /// Force using GTK4.
     fn with_gtk4(&mut self) -> &mut Self;
 
+    /// Whether to allow the event loop to be created off of the main thread.
+    fn with_any_thread(&mut self, any_thread: bool) -> &mut Self;
+
     /// Set the GTK application ID.
     fn with_application_id(&mut self, application_id: String) -> &mut Self;
 }
