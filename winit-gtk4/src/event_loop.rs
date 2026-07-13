@@ -48,6 +48,16 @@ pub(crate) struct RunState {
     proxy_wake_up: Arc<AtomicBool>,
 }
 
+/// GTK4 event loop implementation.
+///
+/// The event loop owns a GTK [`Application`](gtk4::Application) and drives
+/// winit callbacks from GLib's default [`MainContext`](gtk4::glib::MainContext).
+/// Create it on the main thread unless the public winit builder has been
+/// configured to allow another thread. GTK objects created by this backend must
+/// still be used according to GTK's thread and main-context rules.
+///
+/// GTK4 does not expose one stable event-loop file descriptor; users that need
+/// to wake the loop from another thread should use a winit event-loop proxy.
 #[derive(Debug)]
 pub struct EventLoop {
     active_event_loop: ActiveEventLoop,
@@ -57,11 +67,35 @@ pub struct EventLoop {
     context: gtk4::glib::MainContext,
 }
 
+/// GTK4-specific event loop attributes.
+///
+/// These attributes configure the process-wide GTK application created for the
+/// event loop. They are normally set through
+/// [`EventLoopBuilderExtGtk4`](crate::EventLoopBuilderExtGtk4) on the public
+/// `winit` event-loop builder.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PlatformSpecificEventLoopAttributes {
+    /// GTK application ID used when registering the underlying
+    /// [`gtk4::Application`].
+    ///
+    /// When set, the value must be a valid
+    /// [`GApplication` ID](gtk4::gio::Application::id_is_valid), for example
+    /// `org.example.MyApplication`. Invalid IDs make event-loop construction
+    /// return [`EventLoopError::NotSupported`]. When unset, the GTK application
+    /// is registered as non-unique.
     pub application_id: Option<String>,
 }
 
+/// Active GTK4 event-loop target.
+///
+/// This value is passed to application callbacks while the GTK4 event loop is
+/// running. It creates GTK-backed windows and cursors, reports monitor and theme
+/// information through GDK, and exposes the raw display handle for the runtime
+/// GDK backend, currently Wayland or X11.
+///
+/// The target is tied to GLib's default main context. GTK objects reachable from
+/// windows created through this target must be accessed on the thread and main
+/// context required by GTK.
 #[derive(Clone)]
 pub struct ActiveEventLoop {
     pub(crate) display_handle: OwnedDisplayHandle,
@@ -89,6 +123,17 @@ impl ActiveEventLoop {
 }
 
 impl EventLoop {
+    /// Creates a GTK4 event loop from GTK4-specific attributes.
+    ///
+    /// This registers a [`gtk4::Application`], opens the default GDK display,
+    /// captures its raw display handle, and prepares the GLib main context used
+    /// by the event loop.
+    ///
+    /// Only one GTK4 event loop may be created in a process. A second
+    /// construction attempt returns [`EventLoopError::RecreationAttempt`].
+    /// Invalid application IDs return [`EventLoopError::NotSupported`], and
+    /// failures from GTK/GDK display initialization are returned as
+    /// [`EventLoopError::Os`].
     pub fn new(attributes: &PlatformSpecificEventLoopAttributes) -> Result<Self, EventLoopError> {
         static EVENT_LOOP_CREATED: AtomicBool = AtomicBool::new(false);
         if EVENT_LOOP_CREATED.swap(true, Ordering::Relaxed) {
@@ -150,10 +195,20 @@ impl EventLoop {
         })
     }
 
+    /// Returns the active event-loop target used to create windows and proxies.
     pub fn window_target(&self) -> &dyn CoreActiveEventLoop {
         &self.active_event_loop
     }
 
+    /// Runs an [`ApplicationHandler`] until the application exits.
+    ///
+    /// This method repeatedly pumps GTK/GLib events on the calling thread and
+    /// dispatches resulting winit callbacks. Unlike the one-shot `run_app`
+    /// entry point exposed by the public `winit` crate, this backend method can
+    /// be called again after it returns.
+    ///
+    /// An exit code of `0` returns `Ok(())`; any other exit code is returned as
+    /// [`EventLoopError::ExitFailure`].
     pub fn run_app_on_demand<A: ApplicationHandler>(
         &mut self,
         mut app: A,
@@ -177,6 +232,16 @@ impl EventLoop {
         exit
     }
 
+    /// Runs one iteration of GTK4 event processing for an [`ApplicationHandler`].
+    ///
+    /// On the first call this activates the underlying GTK application and emits
+    /// the initial winit lifecycle callbacks. Later calls dispatch pending GLib
+    /// events, queued window commands, proxy wakeups, and winit window events.
+    ///
+    /// The optional timeout caps how long this call may block while waiting for
+    /// work, after also considering the current [`ControlFlow`]. The returned
+    /// [`PumpStatus`] indicates whether the application should continue polling
+    /// or has requested exit.
     pub fn pump_app_events<A: ApplicationHandler>(
         &mut self,
         timeout: Option<Duration>,
