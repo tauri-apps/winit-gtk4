@@ -135,10 +135,6 @@ impl Window {
     pub(crate) fn gtk_window(&self) -> gtk4::ApplicationWindow {
         self.gtk_window.clone()
     }
-
-    pub(crate) fn gdk_surface(&self) -> Option<gtk4::gdk::Surface> {
-        self.gtk_window.surface()
-    }
 }
 
 impl UnownedWindow {

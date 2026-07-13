@@ -53,20 +53,12 @@ pub trait WindowExtGtk4 {
     ///
     /// GTK objects must be used according to GTK's thread and main-context rules.
     fn gtk_window(&self) -> Option<gtk4::ApplicationWindow>;
-
-    /// Returns the underlying GDK surface, if the GTK window has been realized.
-    fn gdk_surface(&self) -> Option<gtk4::gdk::Surface>;
 }
 
 impl WindowExtGtk4 for dyn CoreWindow + '_ {
     #[inline]
     fn gtk_window(&self) -> Option<gtk4::ApplicationWindow> {
         Some(self.cast_ref::<Window>()?.gtk_window())
-    }
-
-    #[inline]
-    fn gdk_surface(&self) -> Option<gtk4::gdk::Surface> {
-        self.cast_ref::<Window>()?.gdk_surface()
     }
 }
 
