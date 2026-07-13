@@ -301,6 +301,11 @@ impl AsFd for EventLoop {
     /// into other event loop, like [`calloop`] or [`mio`]. When doing so, the
     /// loop must be polled with the [`pump_app_events`] API.
     ///
+    /// ## Platform-specific
+    ///
+    /// - **GTK4:** Unsupported. Panics if the runtime Linux backend is GTK4, because GLib does not
+    ///   expose one stable event-loop file descriptor.
+    ///
     /// [`calloop`]: https://crates.io/crates/calloop
     /// [`mio`]: https://crates.io/crates/mio
     /// [`pump_app_events`]: crate::event_loop::pump_events::EventLoopExtPumpEvents::pump_app_events
@@ -314,6 +319,11 @@ impl AsRawFd for EventLoop {
     /// Get the underlying [EventLoop]'s raw `fd` which you can register
     /// into other event loop, like [`calloop`] or [`mio`]. When doing so, the
     /// loop must be polled with the [`pump_app_events`] API.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - **GTK4:** Unsupported. Panics if the runtime Linux backend is GTK4, because GLib does not
+    ///   expose one stable event-loop file descriptor.
     ///
     /// [`calloop`]: https://crates.io/crates/calloop
     /// [`mio`]: https://crates.io/crates/mio
