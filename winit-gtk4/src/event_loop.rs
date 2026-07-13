@@ -325,6 +325,8 @@ impl EventLoop {
 
                     match command {
                         WindowCommand::RequestRedraw => {
+                            command.apply_to(&window);
+
                             app.window_event(
                                 &self.active_event_loop,
                                 window_id,
