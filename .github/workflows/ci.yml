@@ -88,6 +88,9 @@ jobs:
           # Redox OS doesn't follow MSRV
           - toolchain: '1.85'
             platform: { name: 'Redox OS' }
+          # The gtk-rs 0.22 stack used by the GTK4 backend requires rustc 1.92.
+          - toolchain: '1.85'
+            platform: { name: 'GTK4' }
         include:
           - toolchain: '1.85'
             platform: { name: 'Android', target: aarch64-linux-android, os: ubuntu-latest, options: '--package winit --features=android-native-activity', cmd: 'apk -- ' }
