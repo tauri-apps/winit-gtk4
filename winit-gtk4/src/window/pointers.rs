@@ -11,7 +11,7 @@ use winit_core::event::{
     PointerSource, TabletToolData, TabletToolKind, TabletToolTilt, TouchPhase, WindowEvent,
 };
 
-use super::UnownedWindow;
+use super::{PointerButtonPress, UnownedWindow};
 use crate::event_loop::ActiveEventLoop;
 
 pub(crate) fn connect(
@@ -301,6 +301,18 @@ fn pointer_button_event(event: &gtk4::gdk::Event, window: &UnownedWindow) -> Opt
     }
 
     let (x, y) = event.position()?;
+
+    // Store the last pointer button press event in the window state for later use (e.g., for drag_window).
+    if state == ElementState::Pressed {
+        *window.last_pointer_button_press.lock().unwrap() = Some(PointerButtonPress {
+            device: device.clone(),
+            button: button_event.button() as i32,
+            x,
+            y,
+            timestamp: event.time(),
+        });
+    }
+
     let position = {
         let scale_factor = window.state.lock().unwrap().scale_factor;
         LogicalPosition::new(x, y).to_physical(scale_factor)

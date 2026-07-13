@@ -52,12 +52,23 @@ pub struct UnownedWindow {
     pub(crate) gtk_window: gtk4::ApplicationWindow,
     xwindow: Mutex<Option<crate::x11::GtkXWindow>>,
 
+    pub(crate) last_pointer_button_press: Mutex<Option<PointerButtonPress>>,
+
     display_handle: OwnedDisplayHandle,
     window_handle: Mutex<Option<rwh_06::RawWindowHandle>>,
 
     context: gtk4::glib::MainContext,
     commands: Arc<Mutex<CommandSink>>,
     state: Arc<Mutex<WindowState>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PointerButtonPress {
+    pub(crate) device: gtk4::gdk::Device,
+    pub(crate) button: i32,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) timestamp: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -237,6 +248,7 @@ impl UnownedWindow {
             display_handle: event_loop.display_handle,
             window_handle: Mutex::new(None),
             xwindow: Mutex::new(None),
+            last_pointer_button_press: Mutex::new(None),
             state,
         });
 
@@ -743,6 +755,23 @@ impl UnownedWindow {
         surface.queue_render();
     }
 
+    fn drag_window(&self) -> Result<(), RequestError> {
+        let surface = self.gtk_window.surface();
+        let toplevel = surface.and_then(|surface| surface.downcast::<gtk4::gdk::Toplevel>().ok());
+        let Some(toplevel) = toplevel else {
+            let e = NotSupportedError::new("window dragging is not supported on this GDK surface");
+            return Err(e.into());
+        };
+
+        let Some(press) = self.last_pointer_button_press.lock().unwrap().clone() else {
+            let e = NotSupportedError::new("window dragging requires a pointer button press");
+            return Err(e.into());
+        };
+
+        toplevel.begin_move(&press.device, press.button, press.x, press.y, press.timestamp);
+        Ok(())
+    }
+
     fn inner_position(&self) -> Option<PhysicalPosition<i32>> {
         self.xwindow().as_ref().and_then(|xwindow| xwindow.inner_position())
     }
@@ -1057,7 +1086,13 @@ impl CoreWindow for Window {
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
-        todo!("GTK4 drag_window is not implemented yet")
+        if self.last_pointer_button_press.lock().unwrap().is_none() {
+            let e = NotSupportedError::new("window dragging requires a pointer button press");
+            return Err(e.into());
+        }
+
+        self.queue_command(WindowCommand::DragWindow);
+        Ok(())
     }
 
     fn drag_resize_window(&self, _direction: ResizeDirection) -> Result<(), RequestError> {
@@ -1127,6 +1162,7 @@ pub(crate) enum WindowCommand {
     SetCursorGrab(CursorGrabMode),
     SetCursorVisible(bool),
     SetCursorHittest(bool),
+    DragWindow,
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
 }
@@ -1215,6 +1251,7 @@ impl WindowCommand {
                 }
             },
             WindowCommand::SetCursorHittest(hittest) => window.set_cursor_hittest(hittest),
+            WindowCommand::DragWindow => _ = window.drag_window(),
             WindowCommand::FocusWindow => {
                 if let Some(toplevel) = window
                     .gtk_window
