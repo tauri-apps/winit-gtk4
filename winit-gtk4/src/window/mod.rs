@@ -61,9 +61,9 @@ pub struct UnownedWindow {
 
     pub(crate) gtk_window: gtk4::ApplicationWindow,
     xwindow: Mutex<Option<crate::x11::GtkXWindow>>,
-
-    last_pointer_button_press: Mutex<Option<PointerButtonPress>>,
-    last_pointer_button_event: Mutex<Option<gtk4::gdk::Event>>,
+    wayland: Mutex<Option<crate::wayland::GtkWaylandWindow>>,
+    pointer_device: Mutex<Option<gtk4::gdk::Device>>,
+    pointer_button_press: Mutex<Option<PointerButtonPressState>>,
 
     display_handle: OwnedDisplayHandle,
     window_handle: Mutex<Option<rwh_06::RawWindowHandle>>,
@@ -73,13 +73,18 @@ pub struct UnownedWindow {
     state: Arc<Mutex<WindowState>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct PointerButtonPress {
-    device: gtk4::gdk::Device,
     button: i32,
     x: f64,
     y: f64,
     timestamp: u32,
+}
+
+#[derive(Clone, Debug)]
+struct PointerButtonPressState {
+    button_press: PointerButtonPress,
+    button_event: gtk4::gdk::Event,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -257,8 +262,9 @@ impl UnownedWindow {
             display_handle: event_loop.display_handle,
             window_handle: Mutex::new(None),
             xwindow: Mutex::new(None),
-            last_pointer_button_press: Mutex::new(None),
-            last_pointer_button_event: Mutex::new(None),
+            wayland: Mutex::new(None),
+            pointer_device: Mutex::new(None),
+            pointer_button_press: Mutex::new(None),
             state,
         });
 
@@ -299,6 +305,14 @@ impl UnownedWindow {
 
     pub(crate) fn xwindow(&self) -> std::sync::MutexGuard<'_, Option<crate::x11::GtkXWindow>> {
         self.xwindow.lock().unwrap()
+    }
+
+    fn is_x11_backend(&self) -> bool {
+        matches!(self.display_handle, OwnedDisplayHandle::Xlib { .. })
+    }
+
+    fn is_wayland_backend(&self) -> bool {
+        matches!(self.display_handle, OwnedDisplayHandle::Wayland { .. })
     }
 
     fn connect_events(
@@ -782,6 +796,30 @@ impl UnownedWindow {
         }
     }
 
+    fn set_cursor_grab_wayland(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
+        let Some(surface) = self.gtk_window.surface() else {
+            return Err(NotSupportedError::new("Wayland surface is not available").into());
+        };
+
+        let pointer_device = self.pointer_device.lock().unwrap().clone();
+
+        let mut wayland = self.wayland.lock().unwrap();
+        if wayland.is_none() {
+            if mode == CursorGrabMode::None {
+                return Ok(());
+            }
+
+            *wayland = crate::wayland::GtkWaylandWindow::from_surface(&surface)?;
+        }
+
+        let Some(wayland) = wayland.as_mut() else {
+            let e = NotSupportedError::new("cursor grabbing is not supported on this GDK backend");
+            return Err(e.into());
+        };
+
+        wayland.set_cursor_grab(&surface, pointer_device.as_ref(), mode)
+    }
+
     fn set_cursor_hittest(&self, hittest: bool) {
         let Some(surface) = self.gtk_window.surface() else {
             return;
@@ -824,11 +862,20 @@ impl UnownedWindow {
             return Err(e.into());
         };
 
-        let Some(press) = self.last_pointer_button_press.lock().unwrap().clone() else {
-            let e = NotSupportedError::new("window dragging requires a pointer button press");
-            return Err(e.into());
+        let (device, press) = {
+            let Some(device) = self.pointer_device.lock().unwrap().clone() else {
+                let e = NotSupportedError::new("window dragging requires a pointer device");
+                return Err(e.into());
+            };
+            let Some(press) = self.pointer_button_press.lock().unwrap().clone() else {
+                let e = NotSupportedError::new("window dragging requires a pointer button press");
+                return Err(e.into());
+            };
+
+            (device, press.button_press)
         };
-        toplevel.begin_move(&press.device, press.button, press.x, press.y, press.timestamp);
+
+        toplevel.begin_move(&device, press.button, press.x, press.y, press.timestamp);
         Ok(())
     }
 
@@ -840,21 +887,22 @@ impl UnownedWindow {
             return Err(NotSupportedError::new(e).into());
         };
 
-        let Some(press) = self.last_pointer_button_press.lock().unwrap().clone() else {
-            let e = "window resize dragging requires a pointer button press";
-            return Err(NotSupportedError::new(e).into());
+        let (device, press) = {
+            let Some(device) = self.pointer_device.lock().unwrap().clone() else {
+                let e = "window resize dragging requires a pointer device";
+                return Err(NotSupportedError::new(e).into());
+            };
+            let Some(press) = self.pointer_button_press.lock().unwrap().clone() else {
+                let e = "window resize dragging requires a pointer button press";
+                return Err(NotSupportedError::new(e).into());
+            };
+
+            (device, press.button_press)
         };
 
         let edge = resize_direction_to_gdk_edge(direction);
 
-        toplevel.begin_resize(
-            edge,
-            Some(&press.device),
-            press.button,
-            press.x,
-            press.y,
-            press.timestamp,
-        );
+        toplevel.begin_resize(edge, Some(&device), press.button, press.x, press.y, press.timestamp);
         Ok(())
     }
 
@@ -866,12 +914,12 @@ impl UnownedWindow {
             return Err(e.into());
         };
 
-        let Some(event) = self.last_pointer_button_event.lock().unwrap().clone() else {
+        let Some(press) = self.pointer_button_press.lock().unwrap().clone() else {
             let e = NotSupportedError::new("window menu requires a pointer button event");
             return Err(e.into());
         };
 
-        let _ = toplevel.show_window_menu(event);
+        let _ = toplevel.show_window_menu(press.button_event);
         Ok(())
     }
 
@@ -1157,7 +1205,7 @@ impl CoreWindow for Window {
     fn set_cursor_position(&self, position: Position) -> Result<(), RequestError> {
         let scale_factor = self.state.lock().unwrap().scale_factor;
 
-        if self.xwindow().is_none() {
+        if !self.is_x11_backend() {
             return Err(NotSupportedError::new(
                 "cursor positioning is not supported on this GDK backend",
             )
@@ -1169,13 +1217,6 @@ impl CoreWindow for Window {
     }
 
     fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
-        if self.xwindow().is_none() && mode != CursorGrabMode::None {
-            return Err(NotSupportedError::new(
-                "cursor grabbing is not supported on this GDK backend",
-            )
-            .into());
-        }
-
         if mode != CursorGrabMode::None && self.state.lock().unwrap().cursor_grab_mode == mode {
             return Ok(());
         }
@@ -1192,7 +1233,7 @@ impl CoreWindow for Window {
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
-        if self.last_pointer_button_press.lock().unwrap().is_none() {
+        if self.pointer_button_press.lock().unwrap().is_none() {
             let e = NotSupportedError::new("window dragging requires a pointer button press");
             return Err(e.into());
         }
@@ -1202,7 +1243,7 @@ impl CoreWindow for Window {
     }
 
     fn drag_resize_window(&self, direction: ResizeDirection) -> Result<(), RequestError> {
-        if self.last_pointer_button_press.lock().unwrap().is_none() {
+        if self.pointer_button_press.lock().unwrap().is_none() {
             let e = NotSupportedError::new("window resizing requires a pointer button press");
             return Err(e.into());
         }
@@ -1350,6 +1391,8 @@ impl WindowCommand {
             WindowCommand::SetCursorGrab(mode) => {
                 if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
                     let _ = xwindow.set_cursor_grab(mode);
+                } else if window.is_wayland_backend() {
+                    let _ = window.set_cursor_grab_wayland(mode);
                 }
             },
             WindowCommand::SetCursorVisible(visible) => {
