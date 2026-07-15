@@ -11,8 +11,11 @@ use winit_core::event::{
     PointerSource, TabletToolData, TabletToolKind, TabletToolTilt, TouchPhase, WindowEvent,
 };
 
-use super::{PointerButtonPress, UnownedWindow};
-use crate::event_loop::ActiveEventLoop;
+use super::UnownedWindow;
+use crate::{
+    event_loop::ActiveEventLoop,
+    window::{PointerButtonPress, PointerButtonPressState},
+};
 
 pub(crate) fn connect(
     event_loop: &ActiveEventLoop,
@@ -38,6 +41,10 @@ fn connect_motion(
                 return;
             };
 
+            if let Some(device) = controller.current_event_device() {
+                *window.pointer_device.lock().unwrap() = Some(device.clone());
+            }
+
             let pointer = PointerMetadata::from_controller(controller);
             let event = WindowEvent::PointerEntered {
                 device_id: pointer.device_id,
@@ -59,6 +66,10 @@ fn connect_motion(
             let Some(window) = window.upgrade() else {
                 return;
             };
+
+            if let Some(device) = controller.current_event_device() {
+                *window.pointer_device.lock().unwrap() = Some(device.clone());
+            }
 
             let pointer = PointerMetadata::from_controller(controller);
             let event = WindowEvent::PointerMoved {
@@ -300,19 +311,22 @@ fn pointer_button_event(event: &gtk4::gdk::Event, window: &UnownedWindow) -> Opt
         _ => return None,
     }
 
+    *window.pointer_device.lock().unwrap() = Some(device.clone());
+
     let (x, y) = event.position()?;
 
     // Store the last pointer button press event in the window state for later use (e.g., for
     // drag_window).
     if state == ElementState::Pressed {
-        *window.last_pointer_button_event.lock().unwrap() = Some(event.clone());
-        *window.last_pointer_button_press.lock().unwrap() = Some(PointerButtonPress {
-            device: device.clone(),
-            button: button_event.button() as i32,
-            x,
-            y,
-            timestamp: event.time(),
-        });
+        {
+            let button = button_event.button() as i32;
+            let timestamp = event.time();
+            *window.pointer_device.lock().unwrap() = Some(device.clone());
+            *window.pointer_button_press.lock().unwrap() = Some(PointerButtonPressState {
+                button_press: PointerButtonPress { button, x, y, timestamp },
+                button_event: event.clone(),
+            });
+        };
     }
 
     let position = {

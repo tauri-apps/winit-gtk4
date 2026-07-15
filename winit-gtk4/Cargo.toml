@@ -14,6 +14,8 @@ gdk4-wayland.workspace = true
 gdk4-x11.workspace = true
 gtk4.workspace = true
 rwh_06.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
 winit-common = { workspace = true, features = ["xkb"] }
 winit-core.workspace = true
 winit-x11.workspace = true
