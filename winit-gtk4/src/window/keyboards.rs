@@ -30,7 +30,7 @@ pub(crate) fn connect(
 
             let event = key_event(controller, &window, keyval, keycode, ElementState::Pressed);
             shared.borrow_mut().events_sink.push_window_event(event, window.id());
-            queue_modifiers_event(&shared, &window, modifiers);
+            queue_modifiers_event(&shared, &window, keyval, ElementState::Pressed, modifiers);
             gtk4::glib::Propagation::Proceed
         });
     }
@@ -45,19 +45,34 @@ pub(crate) fn connect(
 
             let event = key_event(controller, &window, keyval, keycode, ElementState::Released);
             shared.borrow_mut().events_sink.push_window_event(event, window.id());
-            queue_modifiers_event(&shared, &window, modifiers);
+            queue_modifiers_event(&shared, &window, keyval, ElementState::Released, modifiers);
         });
     }
 
     {
         let shared = event_loop.shared.clone();
         let window = window.clone();
-        controller.connect_modifiers(move |_, modifiers| {
+        controller.connect_modifiers(move |controller, modifiers| {
             let Some(window) = window.upgrade() else {
                 return gtk4::glib::Propagation::Proceed;
             };
 
-            queue_modifiers_event(&shared, &window, modifiers);
+            let Some(event) = controller.current_event() else {
+                return gtk4::glib::Propagation::Proceed;
+            };
+
+            let Some(event) = event.downcast::<gtk4::gdk::KeyEvent>().ok() else {
+                return gtk4::glib::Propagation::Proceed;
+            };
+
+            let state = match event.event_type() {
+                gtk4::gdk::EventType::KeyPress => ElementState::Pressed,
+                gtk4::gdk::EventType::KeyRelease => ElementState::Released,
+                _ => return gtk4::glib::Propagation::Proceed,
+            };
+
+            queue_modifiers_event(&shared, &window, event.keyval(), state, modifiers);
+
             gtk4::glib::Propagation::Proceed
         });
     }
@@ -65,11 +80,39 @@ pub(crate) fn connect(
     gtk_window.add_controller(controller);
 }
 
+// Maps a GDK key to its corresponding modifier mask, if applicable.
+fn modifier_mask(key: gtk4::gdk::Key) -> Option<gtk4::gdk::ModifierType> {
+    use gtk4::gdk::{Key, ModifierType};
+
+    match key {
+        Key::Shift_L | Key::Shift_R => Some(ModifierType::SHIFT_MASK),
+        Key::Control_L | Key::Control_R => Some(ModifierType::CONTROL_MASK),
+        Key::Alt_L | Key::Alt_R => Some(ModifierType::ALT_MASK),
+        Key::Meta_L | Key::Meta_R => Some(ModifierType::META_MASK),
+        Key::Super_L | Key::Super_R => Some(ModifierType::SUPER_MASK),
+        Key::Hyper_L | Key::Hyper_R => Some(ModifierType::HYPER_MASK),
+        _ => None,
+    }
+}
+
 fn queue_modifiers_event(
     shared: &Rc<RefCell<SharedState>>,
     window: &UnownedWindow,
-    modifiers: gtk4::gdk::ModifierType,
+    keyval: gtk4::gdk::Key,
+    state: ElementState,
+    mut modifiers: gtk4::gdk::ModifierType,
 ) {
+    // connect_modifiers, connect_key_pressed, all report modifier state,
+    // before this key event, so if current key is a modifier, modifiers
+    // state is not updated yet, so we need to update it manually.
+    // before sending the winit event.
+    if let Some(mask) = modifier_mask(keyval) {
+        match state {
+            ElementState::Pressed => modifiers.insert(mask),
+            ElementState::Released => modifiers.remove(mask),
+        }
+    }
+
     let modifiers = gdk_mods_to_winit_mods(modifiers);
     let changed = {
         let mut state = window.state.lock().unwrap();
