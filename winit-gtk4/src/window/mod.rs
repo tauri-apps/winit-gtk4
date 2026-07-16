@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::fmt;
 use std::ops::Deref;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use dpi::{LogicalSize, PhysicalInsets, PhysicalPosition, PhysicalSize, Position, Size};
@@ -70,6 +71,7 @@ pub struct UnownedWindow {
 
     context: gtk4::glib::MainContext,
     commands: Arc<Mutex<CommandSink>>,
+    pub(crate) requests: Arc<WindowRequests>,
     state: Arc<Mutex<WindowState>>,
 }
 
@@ -117,7 +119,35 @@ pub(crate) struct WindowState {
     cursor: Cursor,
     cursor_visible: bool,
     cursor_grab_mode: CursorGrabMode,
-    redraw_requested: bool,
+    frame_clock_state: FrameClockState,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FrameClockState {
+    #[default]
+    None,
+    Requested,
+    Received,
+}
+
+/// Requests from the window to the event loop.
+#[derive(Debug)]
+pub(crate) struct WindowRequests {
+    /// Close requested.
+    close_requested: AtomicBool,
+
+    /// Redraw requested.
+    redraw_requested: AtomicBool,
+}
+
+impl WindowRequests {
+    pub fn take_close_requested(&self) -> bool {
+        self.close_requested.swap(false, Ordering::Relaxed)
+    }
+
+    pub fn take_redraw_requested(&self) -> bool {
+        self.redraw_requested.swap(false, Ordering::Relaxed)
+    }
 }
 
 impl fmt::Debug for UnownedWindow {
@@ -247,17 +277,22 @@ impl UnownedWindow {
             cursor,
             cursor_visible: true,
             cursor_grab_mode: CursorGrabMode::None,
-            redraw_requested: false,
+            frame_clock_state: FrameClockState::None,
         };
         let state = Arc::new(Mutex::new(state));
 
         install_transparency_css(&gtk_window);
 
         let commands = event_loop.shared.borrow().commands.clone();
+        let requests = Arc::new(WindowRequests {
+            close_requested: AtomicBool::new(false),
+            redraw_requested: AtomicBool::new(false),
+        });
         let window = Arc::new(Self {
             window_id,
             context: event_loop.context.clone(),
             commands,
+            requests,
             gtk_window,
             display_handle: event_loop.display_handle,
             window_handle: Mutex::new(None),
@@ -281,7 +316,7 @@ impl UnownedWindow {
         // Realize before `present()` so that X11-only initial state, such as
         // position and window level, can be applied before the window is shown.
         WidgetExt::realize(&window.gtk_window);
-        Self::connect_redraw(event_loop, &window.gtk_window, window.id(), Arc::downgrade(&window));
+        Self::connect_redraw(&window.gtk_window, Arc::downgrade(&window));
 
         let window_handle = raw_window_handle(&window.gtk_window);
         *window.window_handle.lock().unwrap() = window_handle;
@@ -336,32 +371,18 @@ impl UnownedWindow {
         touches::connect(event_loop, gtk_window, window);
     }
 
-    fn connect_redraw(
-        event_loop: &ActiveEventLoop,
-        gtk_window: &gtk4::ApplicationWindow,
-        window_id: WindowId,
-        window: Weak<UnownedWindow>,
-    ) {
+    fn connect_redraw(gtk_window: &gtk4::ApplicationWindow, window: Weak<UnownedWindow>) {
         let Some(frame_clock) = gtk_window.frame_clock() else {
             return;
         };
 
-        let shared = event_loop.shared.clone();
         frame_clock.connect_update(move |_| {
             let Some(window) = window.upgrade() else {
                 return;
             };
 
-            let redraw_requested = {
-                let mut state = window.state.lock().unwrap();
-                let redraw_requested = state.redraw_requested;
-                state.redraw_requested = false;
-                redraw_requested
-            };
-
-            if redraw_requested {
-                let mut shared = shared.borrow_mut();
-                shared.events_sink.push_window_event(WindowEvent::RedrawRequested, window_id);
+            if window.requests.redraw_requested.load(Ordering::Relaxed) {
+                window.state.lock().unwrap().frame_clock_state = FrameClockState::Received;
             }
         });
     }
@@ -371,14 +392,14 @@ impl UnownedWindow {
         gtk_window: &gtk4::ApplicationWindow,
         window: Weak<UnownedWindow>,
     ) {
-        let shared = event_loop.shared.clone();
+        let context = event_loop.context.clone();
         gtk_window.connect_close_request(move |_| {
             let Some(window) = window.upgrade() else {
                 return gtk4::glib::Propagation::Proceed;
             };
 
-            let mut shared = shared.borrow_mut();
-            shared.events_sink.push_window_event(WindowEvent::CloseRequested, window.id());
+            window.requests.close_requested.store(true, Ordering::Relaxed);
+            context.wakeup();
 
             gtk4::glib::Propagation::Stop
         });
@@ -836,22 +857,13 @@ impl UnownedWindow {
 
     fn schedule_redraw(&self) {
         if let Some(frame_clock) = self.gtk_window.frame_clock() {
+            self.state.lock().unwrap().frame_clock_state = FrameClockState::Requested;
             frame_clock.request_phase(gtk4::gdk::FrameClockPhase::UPDATE);
         }
 
         if let Some(surface) = self.gtk_window.surface() {
             surface.queue_render();
         }
-    }
-
-    fn mark_redraw_requested(&self) -> bool {
-        let mut state = self.state.lock().unwrap();
-        if state.redraw_requested {
-            return false;
-        }
-
-        state.redraw_requested = true;
-        true
     }
 
     fn drag_window(&self) -> Result<(), RequestError> {
@@ -992,7 +1004,16 @@ impl CoreWindow for Window {
     }
 
     fn request_redraw(&self) {
-        if self.mark_redraw_requested() {
+        // NOTE: try to not wake up the loop when the event was already scheduled and not yet
+        // processed by the loop, because if at this point the value was `true` it could only
+        // mean that the loop still haven't dispatched the value to the client and will do
+        // eventually, resetting it to `false`.
+        if self
+            .requests
+            .redraw_requested
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
             self.queue_command(WindowCommand::RequestRedraw);
         }
     }
