@@ -12,10 +12,8 @@ use winit_core::event::{
 };
 
 use super::UnownedWindow;
-use crate::{
-    event_loop::ActiveEventLoop,
-    window::{PointerButtonPress, PointerButtonPressState},
-};
+use crate::event_loop::ActiveEventLoop;
+use crate::window::{PointerButtonPress, PointerButtonPressState};
 
 pub(crate) fn connect(
     event_loop: &ActiveEventLoop,

@@ -1,7 +1,8 @@
 use gdk4_wayland::prelude::WaylandSurfaceExtManual;
 use gtk4::prelude::*;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::{wl_pointer::WlPointer, wl_registry};
+use wayland_client::protocol::wl_pointer::WlPointer;
+use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::ZwpConfinedPointerV1;
 use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
