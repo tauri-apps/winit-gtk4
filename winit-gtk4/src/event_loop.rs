@@ -313,6 +313,9 @@ impl EventLoop {
 
                 while !expired.load(Ordering::Relaxed) && !self.exiting() && !self.has_pending() {
                     dispatched_glib |= self.context.iteration(true);
+                    if dispatched_glib {
+                        break;
+                    }
                 }
 
                 if !expired.load(Ordering::Relaxed) {
@@ -323,6 +326,9 @@ impl EventLoop {
             None => {
                 while !self.exiting() && !self.has_pending() {
                     dispatched_glib |= self.context.iteration(true);
+                    if dispatched_glib {
+                        break;
+                    }
                 }
                 dispatched_glib |= self.flush_pending_glib_events();
             },
@@ -431,6 +437,30 @@ impl EventLoop {
                         window.gtk_window.set_default_size(width, height);
                     }
                 },
+            }
+        }
+
+        let window_ids: Vec<_> = {
+            let shared = self.active_event_loop.shared.borrow();
+            shared.windows.keys().copied().collect()
+        };
+
+        for window_id in window_ids {
+            let window = {
+                let shared = self.active_event_loop.shared.borrow();
+                shared.windows.get(&window_id).and_then(Weak::upgrade)
+            };
+
+            let Some(window) = window else {
+                continue;
+            };
+
+            if window.requests.take_close_requested() {
+                app.window_event(&self.active_event_loop, window_id, WindowEvent::CloseRequested);
+            }
+
+            if window.requests.take_redraw_requested() {
+                app.window_event(&self.active_event_loop, window_id, WindowEvent::RedrawRequested);
             }
         }
 
