@@ -1,7 +1,7 @@
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use dpi::PhysicalPosition;
+use dpi::{PhysicalPosition, PhysicalSize};
 use gtk4::prelude::*;
 use winit_core::error::{NotSupportedError, OsError, RequestError};
 use winit_core::window::{CursorGrabMode, WindowLevel};
@@ -88,6 +88,13 @@ impl GtkXWindow {
         let _ = hints.set_normal_hints(self.xconn.xcb_connection(), self.xid);
 
         let configure = xproto::ConfigureWindowAux::new().x(position.x).y(position.y);
+        let _ = self.xconn.xcb_connection().configure_window(self.xid, &configure);
+
+        let _ = self.xconn.xcb_connection().flush();
+    }
+
+    pub fn request_surface_size(&self, size: PhysicalSize<u32>) {
+        let configure = xproto::ConfigureWindowAux::new().width(size.width).height(size.height);
         let _ = self.xconn.xcb_connection().configure_window(self.xid, &configure);
 
         let _ = self.xconn.xcb_connection().flush();

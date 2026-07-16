@@ -1327,8 +1327,14 @@ impl WindowCommand {
         match self {
             WindowCommand::RequestRedraw => window.schedule_redraw(),
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
-                let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
-                window.gtk_window.set_default_size(width, height);
+                // On X11, using set_default_size causes the window position to shift downwards
+                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
+                    let surface_size = size.to_physical::<u32>(scale_factor);
+                    xwindow.request_surface_size(surface_size);
+                } else {
+                    let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
+                    window.gtk_window.set_default_size(width, height);
+                }
             },
             WindowCommand::SetMinSurfaceSize { min_size, scale_factor } => {
                 let (width, height) = min_size
