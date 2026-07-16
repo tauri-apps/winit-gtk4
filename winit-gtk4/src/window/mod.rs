@@ -374,7 +374,7 @@ impl UnownedWindow {
         let shared = event_loop.shared.clone();
         gtk_window.connect_close_request(move |_| {
             let Some(window) = window.upgrade() else {
-                return gtk4::glib::Propagation::Stop;
+                return gtk4::glib::Propagation::Proceed;
             };
 
             let mut shared = shared.borrow_mut();

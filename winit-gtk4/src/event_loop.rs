@@ -392,7 +392,7 @@ impl EventLoop {
 
                     command.apply_to(&window);
                 },
-                Command::CloseWindow(window) => window.close(),
+                Command::CloseWindow(window) => window.destroy(),
             }
         }
 
