@@ -536,9 +536,10 @@ impl UnownedWindow {
                 return;
             };
 
-            // Store the X11 window handle for later use.
+            // Store backend window handles for later use.
             let xconn = xconn.clone();
             let xwindow = xconn.and_then(|x| crate::x11::GtkXWindow::from_surface(&surface, x));
+            let wayland = crate::wayland::GtkWaylandWindow::from_surface(&surface);
 
             if let Some(xwindow) = &xwindow {
                 let parent = surface_attributes.parent_window.and_then(crate::x11::parent_window);
@@ -552,6 +553,7 @@ impl UnownedWindow {
             }
 
             *window.xwindow.lock().unwrap() = xwindow;
+            *window.wayland.lock().unwrap() = wayland;
         });
 
         gtk_window.connect_map(move |_| {
@@ -817,28 +819,42 @@ impl UnownedWindow {
         }
     }
 
-    fn set_cursor_grab_wayland(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
+    fn set_cursor_grab(&self, mode: CursorGrabMode) -> Result<(), RequestError> {
+        if let Some(xwindow) = self.xwindow.lock().unwrap().as_ref() {
+            return xwindow.set_cursor_grab(mode);
+        }
+
         let Some(surface) = self.gtk_window.surface() else {
-            return Err(NotSupportedError::new("Wayland surface is not available").into());
+            return Err(NotSupportedError::new("GDK surface is not available").into());
         };
 
         let pointer_device = self.pointer_device.lock().unwrap().clone();
-
         let mut wayland = self.wayland.lock().unwrap();
-        if wayland.is_none() {
-            if mode == CursorGrabMode::None {
-                return Ok(());
-            }
-
-            *wayland = crate::wayland::GtkWaylandWindow::from_surface(&surface)?;
-        }
-
         let Some(wayland) = wayland.as_mut() else {
             let e = NotSupportedError::new("cursor grabbing is not supported on this GDK backend");
             return Err(e.into());
         };
 
         wayland.set_cursor_grab(&surface, pointer_device.as_ref(), mode)
+    }
+
+    fn set_cursor_position(&self, position: Position) -> Result<(), RequestError> {
+        let scale_factor = self.state.lock().unwrap().scale_factor;
+
+        if let Some(xwindow) = self.xwindow.lock().unwrap().as_ref() {
+            let position = position.to_physical::<i32>(scale_factor);
+            return xwindow.set_cursor_position(position);
+        }
+
+        let mut wayland = self.wayland.lock().unwrap();
+        let Some(wayland) = wayland.as_mut() else {
+            let e =
+                NotSupportedError::new("cursor positioning is not supported on this GDK backend");
+            return Err(e.into());
+        };
+
+        let position = position.to_logical::<f64>(scale_factor);
+        wayland.set_cursor_position(position)
     }
 
     fn set_cursor_hittest(&self, hittest: bool) {
@@ -1224,16 +1240,16 @@ impl CoreWindow for Window {
     }
 
     fn set_cursor_position(&self, position: Position) -> Result<(), RequestError> {
-        let scale_factor = self.state.lock().unwrap().scale_factor;
-
-        if !self.is_x11_backend() {
-            return Err(NotSupportedError::new(
-                "cursor positioning is not supported on this GDK backend",
-            )
-            .into());
+        if self.is_wayland_backend() {
+            if self.state.lock().unwrap().cursor_grab_mode != CursorGrabMode::Locked {
+                return Err(NotSupportedError::new(
+                    "cursor positioning requires a locked pointer on Wayland",
+                )
+                .into());
+            }
         }
 
-        self.queue_command(WindowCommand::SetCursorPosition { position, scale_factor });
+        self.queue_command(WindowCommand::SetCursorPosition(position));
         Ok(())
     }
 
@@ -1332,7 +1348,7 @@ pub(crate) enum WindowCommand {
     SetWindowLevel(WindowLevel),
     SetWindowIcon(Option<Icon>),
     SetCursor(Cursor),
-    SetCursorPosition { position: Position, scale_factor: f64 },
+    SetCursorPosition(Position),
     SetCursorGrab(CursorGrabMode),
     SetCursorVisible(bool),
     SetCursorHittest(bool),
@@ -1409,19 +1425,9 @@ impl WindowCommand {
                     window.gtk_window.set_cursor(Some(&invisible_cursor()));
                 }
             },
-            WindowCommand::SetCursorPosition { position, scale_factor } => {
-                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
-                    let position = position.to_physical::<i32>(scale_factor);
-                    let _ = xwindow.set_cursor_position(position);
-                }
-            },
-            WindowCommand::SetCursorGrab(mode) => {
-                if let Some(xwindow) = window.xwindow.lock().unwrap().as_ref() {
-                    let _ = xwindow.set_cursor_grab(mode);
-                } else if window.is_wayland_backend() {
-                    let _ = window.set_cursor_grab_wayland(mode);
-                }
-            },
+            WindowCommand::SetCursorPosition(position) => _ = window.set_cursor_position(position),
+
+            WindowCommand::SetCursorGrab(mode) => _ = window.set_cursor_grab(mode),
             WindowCommand::SetCursorVisible(visible) => {
                 if visible {
                     let cursor = window.state.lock().unwrap().cursor.clone();

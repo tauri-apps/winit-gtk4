@@ -1,3 +1,4 @@
+use dpi::LogicalPosition;
 use gdk4_wayland::prelude::WaylandSurfaceExtManual;
 use gtk4::prelude::*;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -39,12 +40,12 @@ pub(crate) struct GtkWaylandWindow {
 }
 
 impl GtkWaylandWindow {
-    pub(crate) fn from_surface(surface: &gtk4::gdk::Surface) -> Result<Option<Self>, RequestError> {
+    pub(crate) fn from_surface(surface: &gtk4::gdk::Surface) -> Option<Self> {
         let Ok(_) = surface.display().downcast::<gdk4_wayland::WaylandDisplay>() else {
-            return Ok(None);
+            return None;
         };
 
-        Ok(Some(Self { cursor_grab: None }))
+        Some(Self { cursor_grab: None })
     }
 
     pub(crate) fn set_cursor_grab(
@@ -71,6 +72,18 @@ impl GtkWaylandWindow {
         }
 
         cursor_grab.set_cursor_grab(surface, mode)
+    }
+
+    pub(crate) fn set_cursor_position(
+        &mut self,
+        position: LogicalPosition<f64>,
+    ) -> Result<(), RequestError> {
+        let Some(cursor_grab) = self.cursor_grab.as_mut() else {
+            let e = NotSupportedError::new("cursor positioning requires a locked pointer");
+            return Err(e.into());
+        };
+
+        cursor_grab.set_cursor_position(position)
     }
 }
 
@@ -194,6 +207,24 @@ impl GtkWaylandCursorGrab {
         }
 
         self.current_mode = mode;
+        self.flush()
+    }
+
+    pub(crate) fn set_cursor_position(
+        &self,
+        position: LogicalPosition<f64>,
+    ) -> Result<(), RequestError> {
+        if self.current_mode != CursorGrabMode::Locked {
+            let e = NotSupportedError::new("cursor positioning requires a locked pointer");
+            return Err(e.into());
+        }
+
+        let Some(locked_pointer) = self.locked_pointer.as_ref() else {
+            let e = NotSupportedError::new("cursor positioning requires a locked pointer");
+            return Err(e.into());
+        };
+
+        locked_pointer.set_cursor_position_hint(position.x, position.y);
         self.flush()
     }
 
