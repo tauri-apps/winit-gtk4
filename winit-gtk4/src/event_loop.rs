@@ -459,7 +459,7 @@ impl EventLoop {
                 app.window_event(&self.active_event_loop, window_id, WindowEvent::CloseRequested);
             }
 
-            if window.requests.take_redraw_requested() {
+            if window.take_redraw_requested() {
                 app.window_event(&self.active_event_loop, window_id, WindowEvent::RedrawRequested);
             }
         }

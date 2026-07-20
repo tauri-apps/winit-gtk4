@@ -145,7 +145,7 @@ impl WindowRequests {
         self.close_requested.swap(false, Ordering::Relaxed)
     }
 
-    pub fn take_redraw_requested(&self) -> bool {
+    fn take_redraw_requested(&self) -> bool {
         self.redraw_requested.swap(false, Ordering::Relaxed)
     }
 }
@@ -336,6 +336,26 @@ impl UnownedWindow {
 
     pub(crate) fn id(&self) -> WindowId {
         self.window_id
+    }
+
+    pub(crate) fn take_redraw_requested(&self) -> bool {
+        if !self.requests.redraw_requested.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        if self.gtk_window.frame_clock().is_none() {
+            return self.requests.take_redraw_requested();
+        }
+
+        let mut state = self.state.lock().unwrap();
+        if state.frame_clock_state != FrameClockState::Received {
+            return false;
+        }
+
+        state.frame_clock_state = FrameClockState::None;
+        drop(state);
+
+        self.requests.take_redraw_requested()
     }
 
     pub(crate) fn xwindow(&self) -> std::sync::MutexGuard<'_, Option<crate::x11::GtkXWindow>> {
