@@ -103,7 +103,11 @@ pub(crate) struct WindowState {
     last_position: Option<PhysicalPosition<i32>>,
     inner_position_rel_parent: Option<PhysicalPosition<i32>>,
     frame_extents: Option<crate::x11::FrameExtentsHeuristic>,
-    scale_factor: f64,
+    /// GDK's scale of the surface: physical pixels per GTK logical pixel.
+    surface_scale: f64,
+    /// The part of the desktop's scale that GDK leaves to the font DPI on X11, where it scales
+    /// surfaces by whole numbers only; see [`crate::x11::font_scale`].
+    font_scale: f64,
     visible: bool,
     resizable: bool,
     minimized: bool,
@@ -121,6 +125,13 @@ pub(crate) struct WindowState {
     cursor_visible: bool,
     cursor_grab_mode: CursorGrabMode,
     frame_clock_state: FrameClockState,
+}
+
+impl WindowState {
+    /// winit's scale factor: physical pixels per winit logical pixel.
+    fn scale_factor(&self) -> f64 {
+        self.surface_scale * self.font_scale
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -192,11 +203,14 @@ impl UnownedWindow {
         // synchronously realize the widget and re-enter callbacks that mutate it.
         let app = event_loop.shared.borrow().app.clone();
 
-        let scale_factor = guessed_monitor().map(|monitor| monitor.scale()).unwrap_or(1.0);
+        let surface_scale = guessed_monitor().map(|monitor| monitor.scale()).unwrap_or(1.0);
+        let font_scale =
+            gtk4::gdk::Display::default().map_or(1.0, |display| crate::x11::font_scale(&display));
+        let scale_factor = surface_scale * font_scale;
 
         let surface_size = attributes
             .surface_size
-            .map(|size| size.to_logical::<u32>(scale_factor))
+            .map(|size| gtk_size::<u32>(size, scale_factor, surface_scale))
             .unwrap_or_else(|| LogicalSize::new(800, 600));
 
         let position =
@@ -231,7 +245,7 @@ impl UnownedWindow {
         // GTK4/GDK exposes minimum toplevel size, but no maximum-size constraint.
         if let Some(min_surface_size) = attributes.min_surface_size {
             let (width, height): (i32, i32) =
-                min_surface_size.to_logical::<i32>(scale_factor).into();
+                gtk_size::<i32>(min_surface_size, scale_factor, surface_scale).into();
             builder = builder.width_request(width).height_request(height);
         }
 
@@ -265,7 +279,8 @@ impl UnownedWindow {
             last_position: None,
             inner_position_rel_parent: None,
             frame_extents: None,
-            scale_factor,
+            surface_scale,
+            font_scale,
             visible,
             resizable,
             minimized: false,
@@ -343,8 +358,9 @@ impl UnownedWindow {
         self.window_id
     }
 
-    pub(crate) fn scale_factor(&self) -> f64 {
-        self.state.lock().unwrap().scale_factor
+    /// Physical pixels per GTK logical pixel, which GTK's coordinates are in.
+    pub(crate) fn surface_scale(&self) -> f64 {
+        self.state.lock().unwrap().surface_scale
     }
 
     pub(crate) fn take_redraw_requested(&self) -> bool {
@@ -602,16 +618,16 @@ impl UnownedWindow {
             return;
         };
 
-        let scale_factor = surface.scale();
-        let surface_size = {
+        let display = surface.display();
+        let (scale_factor, surface_size) = {
             let mut state = winit_window.state.lock().unwrap();
-            let logical_size = state.surface_size;
 
             // Window creation only has a guessed monitor scale. Once the GDK surface exists,
             // seed the state from the actual surface scale before listening for later changes.
-            state.scale_factor = scale_factor;
+            state.surface_scale = surface.scale();
+            state.font_scale = crate::x11::font_scale(&display);
 
-            logical_size.to_physical(scale_factor)
+            (state.scale_factor(), state.surface_size.to_physical(state.surface_scale))
         };
 
         // Push initial scale factor event
@@ -624,27 +640,48 @@ impl UnownedWindow {
             );
         }
 
-        let shared = shared.clone();
-        surface.connect_scale_notify(move |surface| {
-            let Some(window) = window.upgrade() else {
+        {
+            let shared = shared.clone();
+            let window = window.clone();
+            surface.connect_scale_notify(move |surface| {
+                let surface_scale = surface.scale();
+                Self::rescale(&shared, &window, |state| state.surface_scale = surface_scale);
+            });
+        }
+
+        if display.is::<gdk4_x11::X11Display>() {
+            let shared = shared.clone();
+            let settings = gtk4::Settings::for_display(&display);
+            settings.connect_gtk_xft_dpi_notify(move |_| {
+                let font_scale = crate::x11::font_scale(&display);
+                Self::rescale(&shared, &window, |state| state.font_scale = font_scale);
+            });
+        }
+    }
+
+    /// Updates the window's scales with `update`, and reports the scale factor if it changed.
+    fn rescale(
+        shared: &Rc<RefCell<SharedState>>,
+        window: &Weak<UnownedWindow>,
+        update: impl FnOnce(&mut WindowState),
+    ) {
+        let Some(window) = window.upgrade() else {
+            return;
+        };
+
+        let (scale_factor, surface_size) = {
+            let mut state = window.state.lock().unwrap();
+            let before = state.scale_factor();
+            update(&mut state);
+            if state.scale_factor() == before {
                 return;
-            };
+            }
 
-            let scale_factor = surface.scale();
-            let surface_size = {
-                let mut state = window.state.lock().unwrap();
-                if state.scale_factor == scale_factor {
-                    return;
-                }
+            (state.scale_factor(), state.surface_size.to_physical(state.surface_scale))
+        };
 
-                let logical_size = state.surface_size;
-                state.scale_factor = scale_factor;
-                logical_size.to_physical(scale_factor)
-            };
-
-            let mut shared = shared.borrow_mut();
-            shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window.id());
-        });
+        let mut shared = shared.borrow_mut();
+        shared.events_sink.push_scale_factor_changed(scale_factor, surface_size, window.id());
     }
 
     fn connect_toplevel_state(surface: &gtk4::gdk::Surface, window: Weak<UnownedWindow>) {
@@ -684,7 +721,7 @@ impl UnownedWindow {
 
             let surface_size = {
                 let mut state = window.state.lock().unwrap();
-                let surface_size = logical_size.to_physical(state.scale_factor);
+                let surface_size = logical_size.to_physical(state.surface_scale);
                 let resized = state
                     .last_layout
                     .map(|last_layout| last_layout != surface_size)
@@ -865,7 +902,10 @@ impl UnownedWindow {
     }
 
     fn set_cursor_position(&self, position: Position) -> Result<(), RequestError> {
-        let scale_factor = self.state.lock().unwrap().scale_factor;
+        let (scale_factor, surface_scale) = {
+            let state = self.state.lock().unwrap();
+            (state.scale_factor(), state.surface_scale)
+        };
 
         if let Some(xwindow) = self.xwindow.lock().unwrap().as_ref() {
             let position = position.to_physical::<i32>(scale_factor);
@@ -879,7 +919,7 @@ impl UnownedWindow {
             return Err(e.into());
         };
 
-        let position = position.to_logical::<f64>(scale_factor);
+        let position = position.to_physical::<f64>(scale_factor).to_logical(surface_scale);
         wayland.set_cursor_position(position)
     }
 
@@ -1081,7 +1121,7 @@ impl CoreWindow for Window {
     }
 
     fn scale_factor(&self) -> f64 {
-        self.state.lock().unwrap().scale_factor
+        self.state.lock().unwrap().scale_factor()
     }
 
     fn request_redraw(&self) {
@@ -1129,17 +1169,17 @@ impl CoreWindow for Window {
     }
 
     fn set_outer_position(&self, position: Position) {
-        let scale_factor = self.state.lock().unwrap().scale_factor;
+        let scale_factor = self.state.lock().unwrap().scale_factor();
         self.queue_command(WindowCommand::SetOuterPosition { position, scale_factor });
     }
 
     fn surface_size(&self) -> PhysicalSize<u32> {
         let state = self.state.lock().unwrap();
-        state.surface_size.to_physical(state.scale_factor)
+        state.surface_size.to_physical(state.surface_scale)
     }
 
     fn request_surface_size(&self, size: Size) -> Option<PhysicalSize<u32>> {
-        let scale_factor = self.state.lock().unwrap().scale_factor;
+        let scale_factor = self.state.lock().unwrap().scale_factor();
         self.queue_command(WindowCommand::SetSurfaceSize { size, scale_factor });
         None
     }
@@ -1158,7 +1198,7 @@ impl CoreWindow for Window {
     }
 
     fn set_min_surface_size(&self, min_size: Option<Size>) {
-        let scale_factor = self.state.lock().unwrap().scale_factor;
+        let scale_factor = self.state.lock().unwrap().scale_factor();
         self.queue_command(WindowCommand::SetMinSurfaceSize { min_size, scale_factor });
     }
 
@@ -1434,13 +1474,16 @@ impl WindowCommand {
                     let surface_size = size.to_physical::<u32>(scale_factor);
                     xwindow.request_surface_size(surface_size);
                 } else {
-                    let (width, height): (i32, i32) = size.to_logical::<i32>(scale_factor).into();
+                    let surface_scale = window.surface_scale();
+                    let (width, height): (i32, i32) =
+                        gtk_size::<i32>(size, scale_factor, surface_scale).into();
                     window.gtk_window.set_default_size(width, height);
                 }
             },
             WindowCommand::SetMinSurfaceSize { min_size, scale_factor } => {
+                let surface_scale = window.surface_scale();
                 let (width, height) = min_size
-                    .map(|size| size.to_logical::<i32>(scale_factor).into())
+                    .map(|size| gtk_size::<i32>(size, scale_factor, surface_scale).into())
                     .unwrap_or((-1, -1));
                 window.gtk_window.set_size_request(width, height);
             },
@@ -1565,6 +1608,12 @@ fn resize_direction_to_gdk_edge(direction: ResizeDirection) -> gtk4::gdk::Surfac
         ResizeDirection::SouthWest => gtk4::gdk::SurfaceEdge::SouthWest,
         ResizeDirection::West => gtk4::gdk::SurfaceEdge::West,
     }
+}
+
+/// `size` in GTK's logical pixels, which are `surface_scale` physical pixels, from winit's,
+/// which are `scale_factor`.
+fn gtk_size<P: dpi::Pixel>(size: Size, scale_factor: f64, surface_scale: f64) -> LogicalSize<P> {
+    size.to_physical::<f64>(scale_factor).to_logical(surface_scale)
 }
 
 fn guessed_monitor() -> Option<gtk4::gdk::Monitor> {

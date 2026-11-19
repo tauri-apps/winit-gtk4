@@ -116,8 +116,8 @@ fn touch_begin(
 
     let finger_id = touch_state.next_finger_id();
     let position = {
-        let scale_factor = window.state.lock().unwrap().scale_factor;
-        LogicalPosition::new(x, y).to_physical(scale_factor)
+        let surface_scale = window.state.lock().unwrap().surface_scale;
+        LogicalPosition::new(x, y).to_physical(surface_scale)
     };
     touch_state.active.insert(sequence.clone(), TouchPoint { finger_id, position });
 
@@ -152,8 +152,8 @@ fn touch_update(
     let primary = touch_state.is_first_touch(&sequence);
     let (x, y) = event.position()?;
     let position = {
-        let scale_factor = window.state.lock().unwrap().scale_factor;
-        LogicalPosition::new(x, y).to_physical(scale_factor)
+        let surface_scale = window.state.lock().unwrap().surface_scale;
+        LogicalPosition::new(x, y).to_physical(surface_scale)
     };
     let touch_point = touch_state.active.get_mut(&sequence)?;
     touch_point.position = position;
@@ -179,8 +179,8 @@ fn touch_end(
     let mut touch_point = touch_state.active.remove(&sequence)?;
 
     if let Some((x, y)) = event.position() {
-        let scale_factor = window.state.lock().unwrap().scale_factor;
-        let position = LogicalPosition::new(x, y).to_physical(scale_factor);
+        let surface_scale = window.state.lock().unwrap().surface_scale;
+        let position = LogicalPosition::new(x, y).to_physical(surface_scale);
         touch_point.position = position;
     }
     touch_state.reset_first_touch();
@@ -216,8 +216,8 @@ fn touch_cancel(
     let mut touch_point = touch_state.active.remove(&sequence)?;
 
     if let Some((x, y)) = event.position() {
-        let scale_factor = window.state.lock().unwrap().scale_factor;
-        let position = LogicalPosition::new(x, y).to_physical(scale_factor);
+        let surface_scale = window.state.lock().unwrap().surface_scale;
+        let position = LogicalPosition::new(x, y).to_physical(surface_scale);
         touch_point.position = position;
     }
     touch_state.reset_first_touch();

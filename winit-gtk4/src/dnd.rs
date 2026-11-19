@@ -95,7 +95,7 @@ pub(crate) fn connect_ingoing_drag(
                 return gdk::DragAction::empty();
             };
 
-            let position = LogicalPosition::new(x, y).to_physical(window.scale_factor());
+            let position = LogicalPosition::new(x, y).to_physical(window.surface_scale());
             let window_id = window.id();
 
             // The file list is loaded asynchronously. Use this serial so a stale
@@ -164,7 +164,7 @@ pub(crate) fn connect_ingoing_drag(
                 return gdk::DragAction::empty();
             };
 
-            let position = LogicalPosition::new(x, y).to_physical(window.scale_factor());
+            let position = LogicalPosition::new(x, y).to_physical(window.surface_scale());
 
             let mut drag_state = drag_state.borrow_mut();
             drag_state.moved(position);
@@ -235,7 +235,7 @@ pub(crate) fn connect_ingoing_drag(
                 return false;
             };
 
-            let position = LogicalPosition::new(x, y).to_physical(window.scale_factor());
+            let position = LogicalPosition::new(x, y).to_physical(window.surface_scale());
 
             let mut drag_state = drag_state.borrow_mut();
             let has_entered = drag_state.transfer_id().is_some();

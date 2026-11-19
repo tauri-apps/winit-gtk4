@@ -66,10 +66,11 @@ pub(crate) struct MonitorHandle {
 impl MonitorHandle {
     fn new(monitor: &gtk4::gdk::Monitor) -> Option<Self> {
         let geometry = monitor.geometry();
-        let scale_factor = monitor.scale();
+        let surface_scale = monitor.scale();
+        let scale_factor = surface_scale * crate::x11::font_scale(&monitor.display());
 
-        let position = LogicalPosition::new(geometry.x(), geometry.y()).to_physical(scale_factor);
-        let size = LogicalSize::new(geometry.width(), geometry.height()).to_physical(scale_factor);
+        let position = LogicalPosition::new(geometry.x(), geometry.y()).to_physical(surface_scale);
+        let size = LogicalSize::new(geometry.width(), geometry.height()).to_physical(surface_scale);
         let refresh_rate = monitor.refresh_rate();
         let refresh_rate = NonZeroU32::new(refresh_rate as u32);
         let current_video_mode = Some(VideoMode::new(size, None, refresh_rate));

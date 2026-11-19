@@ -47,8 +47,8 @@ fn connect_motion(
             let event = WindowEvent::PointerEntered {
                 device_id: pointer.device_id,
                 position: {
-                    let scale_factor = window.state.lock().unwrap().scale_factor;
-                    LogicalPosition::new(x, y).to_physical(scale_factor)
+                    let surface_scale = window.state.lock().unwrap().surface_scale;
+                    LogicalPosition::new(x, y).to_physical(surface_scale)
                 },
                 primary: pointer.primary,
                 kind: pointer.kind,
@@ -73,8 +73,8 @@ fn connect_motion(
             let event = WindowEvent::PointerMoved {
                 device_id: pointer.device_id,
                 position: {
-                    let scale_factor = window.state.lock().unwrap().scale_factor;
-                    LogicalPosition::new(x, y).to_physical(scale_factor)
+                    let surface_scale = window.state.lock().unwrap().surface_scale;
+                    LogicalPosition::new(x, y).to_physical(surface_scale)
                 },
                 primary: pointer.primary,
                 source: pointer.source,
@@ -93,8 +93,8 @@ fn connect_motion(
             let pointer = PointerMetadata::from_controller(controller);
             let position = controller.current_event().and_then(|event| {
                 let (x, y) = event.position()?;
-                let scale_factor = window.state.lock().unwrap().scale_factor;
-                Some(LogicalPosition::new(x, y).to_physical(scale_factor))
+                let surface_scale = window.state.lock().unwrap().surface_scale;
+                Some(LogicalPosition::new(x, y).to_physical(surface_scale))
             });
 
             let event = WindowEvent::PointerLeft {
@@ -328,8 +328,8 @@ fn pointer_button_event(event: &gtk4::gdk::Event, window: &UnownedWindow) -> Opt
     }
 
     let position = {
-        let scale_factor = window.state.lock().unwrap().scale_factor;
-        LogicalPosition::new(x, y).to_physical(scale_factor)
+        let surface_scale = window.state.lock().unwrap().surface_scale;
+        LogicalPosition::new(x, y).to_physical(surface_scale)
     };
 
     Some(WindowEvent::PointerButton {
