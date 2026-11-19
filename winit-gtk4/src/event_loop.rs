@@ -436,7 +436,7 @@ impl EventLoop {
                             continue;
                         };
 
-                        let logical_size = surface_size.to_logical::<i32>(scale_factor);
+                        let logical_size = surface_size.to_logical::<i32>(window.surface_scale());
                         let (width, height) = logical_size.into();
                         window.gtk_window.set_default_size(width, height);
                     }

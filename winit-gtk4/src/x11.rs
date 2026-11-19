@@ -23,6 +23,21 @@ pub(crate) fn x_connection(display: gtk4::gdk::Display) -> Option<Arc<XConnectio
     Some(xconn)
 }
 
+/// The part of the desktop's scale that GDK leaves to `gtk-xft-dpi` on X11, where it scales
+/// surfaces by whole numbers only: KDE at 150%, for one, gives X11 clients a surface scale of 1
+/// and a DPI of 144. Chromium's X11 windows scale by this too, rounded to a 64th as here, and so
+/// does winit's X11 backend. It is 1 elsewhere, where the surface scale is the whole scale.
+pub(crate) fn font_scale(display: &gtk4::gdk::Display) -> f64 {
+    if !display.is::<gdk4_x11::X11Display>() {
+        return 1.0;
+    }
+
+    // In 1024ths of a dot per inch, or -1 when unset.
+    let dpi = gtk4::Settings::for_display(display).gtk_xft_dpi();
+    let scale = (f64::from(dpi) / 1024.0 / 96.0 * 64.0).round() / 64.0;
+    if scale > 0.0 { scale } else { 1.0 }
+}
+
 pub(crate) fn raw_display_handle(
     display: gtk4::gdk::Display,
 ) -> Result<Option<OwnedDisplayHandle>, rwh_06::HandleError> {
