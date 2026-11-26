@@ -16,8 +16,8 @@ use winit_core::icon::Icon;
 use winit_core::keyboard::{ModifiersState, PhysicalKey};
 use winit_core::monitor::{Fullscreen, MonitorHandle};
 use winit_core::window::{
-    CursorGrabMode, ImeCapabilities, ImeRequest, ImeRequestError, ResizeDirection, Theme,
-    UserAttentionType, Window as CoreWindow, WindowAttributes, WindowButtons, WindowId,
+    CursorGrabMode, ImeCapabilities, ImeRequest, ImeRequestData, ImeRequestError, ResizeDirection,
+    Theme, UserAttentionType, Window as CoreWindow, WindowAttributes, WindowButtons, WindowId,
     WindowLevel, WindowType,
 };
 
@@ -26,6 +26,7 @@ use crate::event_loop::{ActiveEventLoop, OwnedDisplayHandle, SharedState};
 use crate::icon::PlatformIconExt;
 use crate::sink::CommandSink;
 
+mod ime;
 mod keyboards;
 mod pointers;
 mod touches;
@@ -66,6 +67,7 @@ pub struct UnownedWindow {
     wayland: Mutex<Option<crate::wayland::GtkWaylandWindow>>,
     pointer_device: Mutex<Option<gtk4::gdk::Device>>,
     pointer_button_press: Mutex<Option<PointerButtonPressState>>,
+    ime: gtk4::glib::WeakRef<gtk4::IMMulticontext>,
 
     display_handle: OwnedDisplayHandle,
     window_handle: Mutex<Option<rwh_06::RawWindowHandle>>,
@@ -114,6 +116,7 @@ pub(crate) struct WindowState {
     has_focus: bool,
     modifiers: ModifiersState,
     held_key_press: Option<PhysicalKey>,
+    ime: ime::ImeState,
     theme: Option<Theme>,
     title: String,
     window_level: WindowLevel,
@@ -276,6 +279,7 @@ impl UnownedWindow {
             has_focus: false,
             modifiers: ModifiersState::default(),
             held_key_press: None,
+            ime: ime::ImeState::default(),
             theme,
             title,
             window_level,
@@ -305,6 +309,7 @@ impl UnownedWindow {
             wayland: Mutex::new(None),
             pointer_device: Mutex::new(None),
             pointer_button_press: Mutex::new(None),
+            ime: gtk4::glib::WeakRef::new(),
             state,
         });
 
@@ -481,6 +486,7 @@ impl UnownedWindow {
                     state.held_key_press = None;
                 }
             }
+            ime::focus(&window, focused);
 
             let mut shared = shared.borrow_mut();
             let event_sink = &mut shared.events_sink;
@@ -1102,8 +1108,9 @@ impl CoreWindow for Window {
     fn pre_present_notify(&self) {}
 
     fn reset_dead_keys(&self) {
-        // GTK4 key input currently comes from GDK keyvals, not winit_common's xkb compose state.
-        // There is no backend-neutral GTK/GDK API to reset GDK's dead-key compose state.
+        // GTK composes dead keys in the input method context, which only composes while the
+        // application has it enabled.
+        self.queue_command(WindowCommand::ResetDeadKeys);
     }
 
     fn surface_position(&self) -> PhysicalPosition<i32> {
@@ -1258,14 +1265,12 @@ impl CoreWindow for Window {
         self.queue_command(WindowCommand::SetWindowIcon(window_icon));
     }
 
-    fn request_ime_update(&self, _request: ImeRequest) -> Result<(), ImeRequestError> {
-        // TODO: implement IME support.
-        Err(ImeRequestError::NotSupported)
+    fn request_ime_update(&self, request: ImeRequest) -> Result<(), ImeRequestError> {
+        ime::request(self, request)
     }
 
     fn ime_capabilities(&self) -> Option<ImeCapabilities> {
-        // TODO: report real IME capabilities
-        None
+        ime::capabilities(self)
     }
 
     fn focus_window(&self) {
@@ -1422,10 +1427,14 @@ pub(crate) enum WindowCommand {
     ShowWindowMenu,
     FocusWindow,
     RequestUserAttention(Option<UserAttentionType>),
+    EnableIme(ImeRequestData),
+    UpdateIme(ImeRequestData),
+    DisableIme,
+    ResetDeadKeys,
 }
 
 impl WindowCommand {
-    pub(crate) fn apply_to(self, window: &UnownedWindow) {
+    pub(crate) fn apply_to(self, window: &UnownedWindow, shared: &RefCell<SharedState>) {
         match self {
             WindowCommand::RequestRedraw => window.schedule_redraw(),
             WindowCommand::SetSurfaceSize { size, scale_factor } => {
@@ -1519,6 +1528,10 @@ impl WindowCommand {
                     xwindow.request_user_attention(request_type.is_some());
                 }
             },
+            WindowCommand::EnableIme(data) => ime::enable(shared, window, data),
+            WindowCommand::UpdateIme(data) => ime::update(window, data),
+            WindowCommand::DisableIme => ime::disable(shared, window),
+            WindowCommand::ResetDeadKeys => ime::reset(window),
         }
     }
 }

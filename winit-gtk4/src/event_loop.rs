@@ -400,7 +400,7 @@ impl EventLoop {
                         continue;
                     };
 
-                    command.apply_to(&window);
+                    command.apply_to(&window, &self.active_event_loop.shared);
                 },
                 Command::CloseWindow(window) => window.destroy(),
             }

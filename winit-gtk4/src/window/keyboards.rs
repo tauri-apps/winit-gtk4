@@ -10,7 +10,7 @@ use winit_core::keyboard::{
     Key, KeyCode, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr,
 };
 
-use super::UnownedWindow;
+use super::{UnownedWindow, ime};
 use crate::event_loop::{ActiveEventLoop, SharedState};
 
 pub(crate) fn connect(
@@ -19,17 +19,19 @@ pub(crate) fn connect(
     window: Weak<UnownedWindow>,
 ) {
     let controller = gtk4::EventControllerKey::new();
+    let context = ime::connect(event_loop, gtk_window, &window);
 
     {
         let shared = event_loop.shared.clone();
         let window = window.clone();
+        let context = context.clone();
         controller.connect_key_pressed(move |controller, keyval, keycode, modifiers| {
             let Some(window) = window.upgrade() else {
                 return gtk4::glib::Propagation::Proceed;
             };
 
             let event = key_event(controller, &window, keyval, keycode, ElementState::Pressed);
-            shared.borrow_mut().events_sink.push_window_event(event, window.id());
+            ime::key(&shared, &window, &context, controller, event);
             queue_modifiers_event(&shared, &window, keyval, ElementState::Pressed, modifiers);
             gtk4::glib::Propagation::Proceed
         });
@@ -44,7 +46,7 @@ pub(crate) fn connect(
             };
 
             let event = key_event(controller, &window, keyval, keycode, ElementState::Released);
-            shared.borrow_mut().events_sink.push_window_event(event, window.id());
+            ime::key(&shared, &window, &context, controller, event);
             queue_modifiers_event(&shared, &window, keyval, ElementState::Released, modifiers);
         });
     }
@@ -133,7 +135,7 @@ fn key_event(
     keyval: gtk4::gdk::Key,
     keycode: u32,
     state: ElementState,
-) -> WindowEvent {
+) -> KeyEvent {
     let physical_key = winit_common::xkb::raw_keycode_to_physicalkey(keycode);
     let repeatable = key_repeats(controller, physical_key, keyval);
     let repeat = update_repeat_state(window, physical_key, state, repeatable);
@@ -142,20 +144,15 @@ fn key_event(
     let key_without_modifiers = key_without_modifiers(controller, keyval, keycode);
     let location = crate::keysym::keysym_location(keyval.into_glib());
 
-    WindowEvent::KeyboardInput {
-        // Match X11/Wayland: focused window keyboard input is not tied to a Winit device id.
-        device_id: None,
-        event: KeyEvent {
-            physical_key,
-            logical_key: logical,
-            text: text.clone(),
-            location,
-            state,
-            repeat,
-            text_with_all_modifiers: text,
-            key_without_modifiers,
-        },
-        is_synthetic: false,
+    KeyEvent {
+        physical_key,
+        logical_key: logical,
+        text: text.clone(),
+        location,
+        state,
+        repeat,
+        text_with_all_modifiers: text,
+        key_without_modifiers,
     }
 }
 
